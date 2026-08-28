@@ -1,0 +1,10 @@
+ultralytics
+opencv-python-headless
+easyocr
+fastapi
+uvicorn
+websockets
+numpy
+scipy
+python-multipart
+pytest

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAHAAI - Smart AI Hazard Awareness & Assistive Intelligence</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1e293b">
+    <!-- Tailwind CSS for clean layout -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom high-contrast overrides and focus rings for accessibility */
+        :focus {
+            outline: 4px solid #3b82f6 !important;
+            outline-offset: 4px;
+        }
+        .state-safe { background-color: #15803d; color: white; }
+        .state-caution { background-color: #a16207; color: white; }
+        .state-alert { background-color: #c2410c; color: white; }
+        .state-critical { background-color: #b91c1c; color: white; }
+    </style>
+</head>
+<body class="bg-slate-900 text-white font-sans min-h-screen flex flex-col justify-between">
+
+    <!-- Header Section -->
+    <header class="bg-slate-900 border-b border-slate-800 p-4 flex justify-between items-center">
+        <div class="flex items-center space-x-3">
+            <div class="w-8 h-8 rounded-full bg-red-600 animate-pulse flex items-center justify-center font-bold text-sm">AI</div>
+            <h1 class="text-2xl font-bold tracking-wider" aria-label="SAHAAI Application Header">SAHAAI</h1>
+        </div>
+        
+        <!-- Live vs Demo Mode Toggle -->
+        <div class="flex items-center space-x-2">
+            <span class="text-xs uppercase font-semibold text-slate-400">Mode:</span>
+            <button id="modeToggleBtn" class="bg-slate-800 border border-slate-700 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg font-bold transition-all" aria-label="Toggle between Live mode and simulated Demo mode">
+                LIVE MODE
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="flex-grow max-w-4xl w-full mx-auto p-4 flex flex-col md:grid md:grid-cols-5 md:gap-4">
+        
+        <!-- Column 1: Video and Bounding Box View (3 Cols on MD) -->
+        <section class="md:col-span-3 flex flex-col space-y-4">
+            <div class="relative bg-black rounded-2xl overflow-hidden border border-slate-800 aspect-video flex items-center justify-center shadow-lg">
+                <video id="videoElement" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
+                <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+                <div id="videoPlaceholder" class="text-slate-500 text-sm font-semibold z-10">Camera Paused</div>
+            </div>
+            
+            <!-- Real-Time Subtitles (Audio Announcements text copy) -->
+            <div class="bg-slate-950 border border-slate-800 p-4 rounded-xl flex items-center space-x-3 shadow" aria-live="assertive">
+                <div class="text-2xl text-red-500 font-bold">🔊</div>
+                <div id="subtitleText" class="text-lg font-bold text-amber-200">
+                    "Welcome. Press Start Safety Mode to begin."
+                </div>
+            </div>
+        </section>
+
+        <!-- Column 2: Dashboard Control Center (2 Cols on MD) -->
+        <section class="md:col-span-2 flex flex-col justify-between space-y-4 mt-4 md:mt-0">
+            
+            <!-- Safety State Indicator Banner -->
+            <div id="safetyBanner" class="state-safe p-6 rounded-2xl flex flex-col items-center justify-center text-center shadow-md transition-all duration-300">
+                <span class="text-xs uppercase font-extrabold tracking-widest opacity-80">Safety State</span>
+                <span id="safetyStateText" class="text-2xl font-black mt-1">SAFE</span>
+            </div>
+
+            <!-- Big Command Targets (Visual Buttons) -->
+            <div class="grid grid-cols-2 gap-3">
+                <button id="toggleSafetyBtn" class="col-span-2 bg-blue-600 hover:bg-blue-500 font-bold p-4 rounded-xl text-lg transition shadow-md" aria-label="Toggle Safety Companion Active or Paused">
+                    START SAFETY MODE
+                </button>
+
+                <button id="askBtn" class="bg-slate-800 hover:bg-slate-700 font-bold p-4 rounded-xl text-sm transition shadow-md border border-slate-700 flex flex-col items-center justify-center" aria-label="Ask SAHAAI voice command button">
+                    <span class="text-xl mb-1">🎤</span>
+                    <span>ASK SAHAAI</span>
+                </button>
+
+                <button id="scanBtn" class="bg-slate-800 hover:bg-slate-700 font-bold p-4 rounded-xl text-sm transition shadow-md border border-slate-700 flex flex-col items-center justify-center" aria-label="Smart Scan environment button">
+                    <span class="text-xl mb-1">🔄</span>
+                    <span>SMART SCAN</span>
+                </button>
+
+                <button id="ocrBtn" class="bg-slate-800 hover:bg-slate-700 font-bold p-4 rounded-xl text-sm transition shadow-md border border-slate-700 flex flex-col items-center justify-center" aria-label="Perform OCR scan on demand">
+                    <span class="text-xl mb-1">📄</span>
+                    <span>READ TEXT</span>
+                </button>
+
+                <button id="helpBtn" class="bg-red-950 border border-red-800 hover:bg-red-900 font-bold p-4 rounded-xl text-sm transition shadow-md flex flex-col items-center justify-center text-red-300" aria-label="SOS Emergency Help button">
+                    <span class="text-xl mb-1">🆘</span>
+                    <span>HELP ME (SOS)</span>
+                </button>
+            </div>
+
+            <!-- Explainability Diagnostics Toggle Button -->
+            <button id="diagToggleBtn" class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold py-2 px-4 rounded-lg text-xs tracking-wider transition">
+                SHOW EXPLAINABILITY DRAWER
+            </button>
+        </section>
+    </main>
+
+    <!-- Explainability Diagnostics Drawer -->
+    <section id="diagDrawer" class="hidden max-w-4xl w-full mx-auto px-4 pb-4">
+        <div class="bg-slate-950 border border-slate-800 rounded-2xl p-4 flex flex-col space-y-3">
+            <h3 class="font-bold text-xs uppercase tracking-widest text-slate-400 border-b border-slate-800 pb-2">🧠 AI Explainability Log (Audit trail)</h3>
+            <div id="diagLogsList" class="h-40 overflow-y-auto font-mono text-xs text-slate-300 space-y-1.5 pr-2">
+                <div>[17:11:45] SYSTEM: Standby mode. Ready to ingest streams.</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Emergency Modal Screen (MockSOS Overlay) -->
+    <dialog id="emergencyDialog" class="bg-red-950 text-white rounded-2xl border-4 border-red-600 p-8 max-w-sm w-full backdrop:bg-slate-950/80 shadow-2xl">
+        <div class="flex flex-col items-center text-center space-y-4">
+            <div class="text-5xl animate-bounce">🚨</div>
+            <h2 class="text-3xl font-black text-red-300">EMERGENCY ACTIVE</h2>
+            <p class="text-sm">Preconfigured contacts are being alerted with mock GPS coordinate parameters:</p>
+            <div class="bg-slate-900/50 p-3 rounded-lg text-xs font-mono w-full">
+                LAT: 12.9716° N<br>
+                LON: 77.5946° E<br>
+                Accuracy: ~5m
+            </div>
+            <button id="closeEmergencyBtn" class="bg-white text-slate-900 font-bold px-6 py-2 rounded-xl text-sm w-full hover:bg-slate-200 transition">
+                CANCEL ALARM
+            </button>
+        </div>
+    </dialog>
+
+    <!-- Script File Import -->
+    <script src="app.js"></script>
+    <script>
+        if ("serviceWorker" in navigator) {
+            window.addEventListener("load", () => {
+                navigator.serviceWorker.register("/service-worker.js")
+                    .then(reg => console.log("Service Worker registered successfully:", reg.scope))
+                    .catch(err => console.error("Service Worker registration failed:", err));
+            });
+        }
+    </script>
+</body>
+</html>
