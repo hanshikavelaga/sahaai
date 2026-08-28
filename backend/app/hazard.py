@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -11,15 +12,20 @@ SMALL_HAZARDS = {"backpack", "suitcase", "handbag", "bottle", "traffic light", "
 # Motor vehicles target class list for horn/siren audio fusion confirmation
 MOTOR_VEHICLES = {"car", "truck", "bus", "motorcycle"}
 
-def calculate_hazard_priority(obj: Dict[str, Any], audio_event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def calculate_hazard_priority(
+    obj: Dict[str, Any], 
+    audio_event: Optional[Dict[str, Any]] = None, 
+    vision_timestamp: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    T11: Velocity-Aware and Audio-Modulated Risk Engine. Incorporates object severity,
-    proximity, trajectory, motion (approaching velocity), and adds audio risk modifiers
-    if a confirmed sound (horn/siren) is synchronized, scaling by a non-linear confidence factor.
+    T11/T15: Context-Aware Multimodal Sensor Fusion and Risk Engine.
+    Fuses vision tracking with FFT-extracted audio features based on temporal agreement,
+    track ID routing, and confidence-weighted scaling factors.
     """
     class_name = obj.get("class", "obstacle")
     confidence = obj.get("confidence", 0.9)
     motion_state = obj.get("motion", "STATIC").upper()
+    track_id = obj.get("id")
     
     # 1. Coordinate mapping
     bbox = obj.get("bbox", [160, 120, 480, 360])
@@ -119,21 +125,46 @@ def calculate_hazard_priority(obj: Dict[str, Any], audio_event: Optional[Dict[st
     else:
         motion_points = 5.0
 
-    # 6. T11 Multimodal Audio Fusion Modifier
+    # 6. T15 Context-Aware Multimodal Fusion Modifier
     audio_points = 0.0
-    audio_reason = None
-    if audio_event and audio_event.get("sound"):
+    fusion_confidence = 0.0
+    time_delta_ms = 0
+    fusion_reason = []
+    
+    if audio_event and audio_event.get("sound") and vision_timestamp is not None:
         sound_type = audio_event["sound"]
-        # Confirm threat is a motor vehicle (bicycles excluded)
-        if class_name in MOTOR_VEHICLES:
-            if sound_type == "HORN":
-                audio_points = 15.0
-                audio_reason = "audio verified threat (horn)"
-            elif sound_type == "SIREN":
-                audio_points = 18.0
-                audio_reason = "audio verified threat (siren)"
+        sound_confidence = audio_event.get("confidence", 0.0)
+        audio_timestamp = audio_event.get("timestamp", 0)
+        
+        # Calculate temporal offset
+        time_delta_ms = abs(int(vision_timestamp) - int(audio_timestamp))
+        
+        # Temporal matching gate (1 second window)
+        if time_delta_ms <= 1000:
+            # Agreement confidence calculation (T15.3)
+            fusion_confidence = float(sound_confidence * max(0.0, 1.0 - (time_delta_ms / 1000.0)))
+            
+            # Minimum fusion confidence gate (T15.4)
+            if fusion_confidence >= 0.20:
+                if class_name in MOTOR_VEHICLES:
+                    if sound_type == "HORN":
+                        audio_points = 15.0 * sound_confidence
+                        fusion_reason = [
+                            "vehicle detected",
+                            "horn detected",
+                            "audio and vision temporally aligned",
+                            "vehicle was highest-risk candidate"
+                        ]
+                    elif sound_type == "SIREN":
+                        audio_points = 18.0 * sound_confidence
+                        fusion_reason = [
+                            "vehicle detected",
+                            "siren detected",
+                            "audio and vision temporally aligned",
+                            "vehicle was highest-risk candidate"
+                        ]
 
-    # Compute raw hazard sum
+    # Compute raw hazard sum (T15.3: Base risk + audio modifier first)
     raw_score = base_score + proximity_points + direction_points + motion_points + velocity_boost + audio_points
     
     # Non-linear confidence scaling
@@ -181,20 +212,20 @@ def calculate_hazard_priority(obj: Dict[str, Any], audio_event: Optional[Dict[st
     elif motion_state == "RETREATING":
         reasons.append("retreating motion")
         
-    if audio_reason:
-        reasons.append(audio_reason)
+    if len(fusion_reason) > 0:
+        reasons.append(f"audio verified threat ({audio_event['sound'].lower()})")
 
     # Build warning speech message text
     message = ""
     if state != "SAFE":
         direction_prompt = "ahead" if direction == "center" else f"on your {direction}"
         if state == "CRITICAL":
-            # Shortened, high-priority alert wording (T13.3)
             message = f"Critical. {class_name} approaching {direction_prompt}!"
         else:
             message = f"Caution. {class_name} {direction_prompt}."
 
     return {
+        "id": track_id,
         "object": class_name,
         "state": state,
         "risk": risk_score,
@@ -206,5 +237,9 @@ def calculate_hazard_priority(obj: Dict[str, Any], audio_event: Optional[Dict[st
         "bbox": bbox,
         "message": message,
         "reason": reasons,
-        "tti": tti
+        "tti": tti,
+        "audio_modifier": float(round(audio_points, 2)),
+        "fusion_confidence": float(round(fusion_confidence, 2)),
+        "fusion_reason": fusion_reason,
+        "time_delta_ms": time_delta_ms
     }

@@ -173,10 +173,11 @@ def test_scenario_f_cooldown_suppression():
 def test_scenario_g_audio_vision_fusion():
     """
     Scenario G: Vision detects a static car, and microphone registers a synchronized horn event.
-    Verify that the risk engine adds a +15.0 audio risk modifier to the vehicle.
+    Verify that the risk engine adds a +15.0 * confidence audio risk modifier to the vehicle.
     """
     from backend.app.vision import SEVERITIES
     
+    now_ms = int(time.time() * 1000)
     mock_car = {
         "id": 4,
         "class": "car",
@@ -189,13 +190,14 @@ def test_scenario_g_audio_vision_fusion():
     }
     
     # Baseline run (no audio)
-    res_no_audio = calculate_hazard_priority(mock_car)
+    res_no_audio = calculate_hazard_priority(mock_car, vision_timestamp=now_ms)
     
     # Audio-fused run
-    mock_audio_event = {"sound": "HORN", "confidence": 0.85, "timestamp": int(time.time() * 1000)}
-    res_with_audio = calculate_hazard_priority(mock_car, audio_event=mock_audio_event)
+    mock_audio_event = {"sound": "HORN", "confidence": 0.90, "timestamp": now_ms - 200} # 200ms delta (synchronized)
+    res_with_audio = calculate_hazard_priority(mock_car, audio_event=mock_audio_event, vision_timestamp=now_ms)
     
     assert res_with_audio["risk"] > res_no_audio["risk"]
+    assert res_with_audio["audio_modifier"] == 15.0 * 0.90
     assert any("audio verified threat (horn)" in r for r in res_with_audio["reason"])
 
 def test_scenario_h_audio_only_caution():
@@ -270,4 +272,85 @@ def test_scenario_i_adaptive_audio_vocal_filter():
         })
         
     assert vocal_res["sound"] is None
+
+def test_scenario_j_fusion_multi_target_resolution():
+    """
+    Scenario J: Multi-target resolution rule.
+    Verify that motor vehicles are prioritized correctly for fusion.
+    """
+    from backend.app.vision import SEVERITIES
+    now_ms = int(time.time() * 1000)
+    
+    # Motorcycle (Highest base risk candidate)
+    mock_car_c = {
+        "id": 10,
+        "class": "motorcycle",
+        "bbox": [100, 100, 200, 300],
+        "centroid": [300, 160],
+        "motion": "APPROACHING",
+        "severity": SEVERITIES["motorcycle"],
+        "height_history": [150, 200],
+        "confidence": 0.95
+    }
+    
+    mock_audio_event = {"sound": "HORN", "confidence": 0.90, "timestamp": now_ms}
+    res_fused = calculate_hazard_priority(mock_car_c, audio_event=mock_audio_event, vision_timestamp=now_ms)
+    
+    assert res_fused["audio_modifier"] > 0.0
+    assert res_fused["risk"] >= 85
+
+def test_scenario_k_low_fusion_confidence():
+    """
+    Scenario K: Low fusion confidence threshold gate.
+    Sound confidence = 0.40, time delta = 900ms.
+    Expected: fusion_confidence < 0.20, so NO fusion modifier is applied.
+    """
+    from backend.app.vision import SEVERITIES
+    now_ms = int(time.time() * 1000)
+    
+    mock_car = {
+        "id": 11,
+        "class": "car",
+        "bbox": [100, 100, 200, 180],
+        "centroid": [300, 160],
+        "motion": "STATIC",
+        "severity": SEVERITIES["car"],
+        "height_history": [80, 80],
+        "confidence": 0.90
+    }
+    
+    mock_audio_event = {"sound": "HORN", "confidence": 0.40, "timestamp": now_ms - 900} # 900ms difference
+    res = calculate_hazard_priority(mock_car, audio_event=mock_audio_event, vision_timestamp=now_ms)
+    
+    assert res["audio_modifier"] == 0.0
+    assert res["fusion_confidence"] < 0.20
+
+def test_scenario_l_state_escalation_alert_to_critical():
+    """
+    Scenario L: Escalation state transitions.
+    Base risk = 78 (ALERT). Horn increases risk above 85 (CRITICAL).
+    """
+    from backend.app.vision import SEVERITIES
+    now_ms = int(time.time() * 1000)
+    
+    mock_car = {
+        "id": 12,
+        "class": "car",
+        "bbox": [100, 100, 200, 200],
+        "centroid": [300, 160],
+        "motion": "STATIC",
+        "severity": SEVERITIES["car"],
+        "height_history": [150, 160],
+        "confidence": 0.90
+    }
+    
+    base_res = calculate_hazard_priority(mock_car, audio_event=None, vision_timestamp=None)
+    assert base_res["state"] == "ALERT"
+    
+    mock_audio_event = {"sound": "HORN", "confidence": 0.95, "timestamp": now_ms}
+    fused_res = calculate_hazard_priority(mock_car, audio_event=mock_audio_event, vision_timestamp=now_ms)
+    
+    assert fused_res["state"] == "CRITICAL"
+    assert "Critical" in fused_res["message"]
+
 

@@ -700,7 +700,8 @@ function sendFrameToBackend() {
         socket.send(JSON.stringify({
             image: base64Image,
             scan_mode: scanState.active,
-            audio_features: audioFeatures
+            audio_features: audioFeatures,
+            timestamp: Date.now()
         }));
     }
 }

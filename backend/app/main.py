@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import os
+import uuid
 from typing import List, Dict, Any
 import cv2
 import numpy as np
@@ -148,6 +149,11 @@ async def websocket_stream(websocket: WebSocket):
     logger.info("WebSocket connection established")
     log_event("SYSTEM", {"message": "WebSocket connection established, safety monitoring started."})
     
+    session_id = str(uuid.uuid4())
+    last_fused_track_id = None
+    last_logged_fusion_time = 0.0
+    last_fusion_safety_state = "SAFE"
+    
     try:
         while True:
             # Receive data from client
@@ -187,6 +193,9 @@ async def websocket_stream(websocket: WebSocket):
 
             # 3. Process image frame
             raw_detections = []
+            vision_timestamp = payload.get("timestamp") or int(time.time() * 1000)
+            current_fusion_state = "NO_FUSION"
+            
             if image_data:
                 try:
                     # Decode base64 image
@@ -203,17 +212,88 @@ async def websocket_stream(websocket: WebSocket):
                         # Update Tracker & Motion (T10)
                         tracked_objects = tracker.update(raw_detections, frame_width, frame_height)
                         
-                        # Process each tracked object through Hazard Priority Engine with Audio Fusion (T11)
+                        # Step 3.1: Calculate base priority scores for all tracked targets (no audio)
+                        base_candidates = []
                         for obj in tracked_objects:
-                            hazard_info = calculate_hazard_priority(obj, audio_event=audio_res)
-                            hazard_info["bbox"] = obj.get("bbox") # Preserve bounding box for client rendering
-                            frame_detections.append(hazard_info)
+                            base_info = calculate_hazard_priority(obj, audio_event=None, vision_timestamp=None)
+                            base_info["obj_ref"] = obj
+                            base_candidates.append(base_info)
+                            
+                        # Step 3.2: Identify the highest-risk motor vehicle target for fusion
+                        MOTOR_VEHICLES = {"car", "truck", "bus", "motorcycle"}
+                        best_vehicle_idx = -1
+                        best_vehicle_risk = -1
+                        
+                        for idx, cand in enumerate(base_candidates):
+                            if cand["object"] in MOTOR_VEHICLES:
+                                if cand["risk"] > best_vehicle_risk:
+                                    best_vehicle_risk = cand["risk"]
+                                    best_vehicle_idx = idx
+                                    
+                        # Step 3.3: Run final priority calculations with audio fusion (T15)
+                        for idx, cand in enumerate(base_candidates):
+                            obj = cand["obj_ref"]
+                            # Only fuse the single highest-risk vehicle with active audio events
+                            if idx == best_vehicle_idx and audio_res and audio_res.get("sound"):
+                                fused_info = calculate_hazard_priority(obj, audio_event=audio_res, vision_timestamp=vision_timestamp)
+                                
+                                # Enforce minimum fusion confidence threshold (0.20)
+                                if fused_info.get("fusion_confidence", 0.0) >= 0.20:
+                                    current_fusion_state = "VISION_AUDIO"
+                                    fused_track_id = fused_info.get("id")
+                                    
+                                    # Check database log eligibility (T15.7)
+                                    import time as pytime
+                                    current_time = pytime.time()
+                                    state_escalated = (fused_info["state"] == "CRITICAL" and last_fusion_safety_state != "CRITICAL")
+                                    time_elapsed = current_time - last_logged_fusion_time
+                                    
+                                    if state_escalated or time_elapsed >= 5.0 or last_fused_track_id != fused_track_id:
+                                        last_logged_fusion_time = current_time
+                                        last_fused_track_id = fused_track_id
+                                        last_fusion_safety_state = fused_info["state"]
+                                        
+                                        # Insert fusion log record
+                                        asyncio.create_task(asyncio.to_thread(insert_fusion_event, {
+                                            "session_id": session_id,
+                                            "vision_detected": True,
+                                            "audio_detected": True,
+                                            "motion_detected": (obj.get("motion", "static").upper() != "STATIC"),
+                                            "object_type": fused_info["object"],
+                                            "sound_type": audio_res["sound"].lower(),
+                                            "final_risk": fused_info["risk"],
+                                            "final_level": fused_info["state"]
+                                        }))
+                                        
+                                    fused_info["bbox"] = obj.get("bbox")
+                                    frame_detections.append(fused_info)
+                                    continue
+                                    
+                            # Fallback (normal visual priority calculation without audio)
+                            final_info = calculate_hazard_priority(obj, audio_event=None, vision_timestamp=None)
+                            final_info["bbox"] = obj.get("bbox")
+                            frame_detections.append(final_info)
                 except Exception as e:
                     logger.error(f"Frame processing error: {e}")
 
             # 4. Integrate Sensor Fusion (Visuals + Audio)
             fused_candidates = list(frame_detections)
             audio_alert = None
+            
+            # Handle RESOLVED fusion transition (T15.8)
+            if last_fused_track_id is not None and current_fusion_state != "VISION_AUDIO":
+                asyncio.create_task(asyncio.to_thread(insert_fusion_event, {
+                    "session_id": session_id,
+                    "vision_detected": False,
+                    "audio_detected": False,
+                    "motion_detected": False,
+                    "object_type": "resolved",
+                    "sound_type": "none",
+                    "final_risk": 0,
+                    "final_level": "SAFE"
+                }))
+                last_fused_track_id = None
+                last_fusion_safety_state = "SAFE"
             
             if audio_res and audio_res.get("sound"):
                 sound_type = audio_res["sound"]
@@ -248,7 +328,7 @@ async def websocket_stream(websocket: WebSocket):
                     
                     # Log audio hazard event to Supabase in the background
                     asyncio.create_task(asyncio.to_thread(insert_audio_event, {
-                        "session_id": "active_walk_session",
+                        "session_id": session_id,
                         "sound_type": sound_label,
                         "confidence": confidence,
                         "amplitude_rms": audio_features.get("rms", 0.05) if audio_features else 0.05,
