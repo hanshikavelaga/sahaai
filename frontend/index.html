@@ -41,10 +41,10 @@
     </header>
 
     <!-- Main Container -->
-    <main class="flex-grow max-w-4xl w-full mx-auto p-4 flex flex-col md:grid md:grid-cols-5 md:gap-4">
+    <main class="flex-grow max-w-4xl w-full mx-auto p-4 flex flex-col lg:grid lg:grid-cols-5 lg:gap-4">
         
-        <!-- Column 1: Video and Bounding Box View (3 Cols on MD) -->
-        <section class="md:col-span-3 flex flex-col space-y-4">
+        <!-- Column 1: Video and Bounding Box View (3 Cols on LG) -->
+        <section class="lg:col-span-3 flex flex-col space-y-4">
             <div class="relative bg-black rounded-2xl overflow-hidden border border-slate-800 aspect-video flex items-center justify-center shadow-lg">
                 <video id="videoElement" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
                 <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
@@ -60,8 +60,8 @@
             </div>
         </section>
 
-        <!-- Column 2: Dashboard Control Center (2 Cols on MD) -->
-        <section class="md:col-span-2 flex flex-col justify-between space-y-4 mt-4 md:mt-0">
+        <!-- Column 2: Dashboard Control Center (2 Cols on LG) -->
+        <section class="lg:col-span-2 flex flex-col justify-between space-y-4 mt-4 lg:mt-0">
             
             <!-- Safety State Indicator Banner -->
             <div id="safetyBanner" class="state-safe p-6 rounded-2xl flex flex-col items-center justify-center text-center shadow-md transition-all duration-300">

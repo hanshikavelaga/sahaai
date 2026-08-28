@@ -143,13 +143,37 @@ function updateSafetyState(state) {
 // -------------------------------------------------------------
 async function startWebcam() {
     try {
-        localMediaStream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                facingMode: { ideal: "environment" },
+        const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+        addDiagLog(`Webcam Init: isMobile=${isMobile}`);
+        
+        let videoConstraints = {};
+        if (isMobile) {
+            // Mobile: strictly require back camera (environment)
+            videoConstraints = {
+                facingMode: { exact: "environment" },
                 width: { ideal: 640 },
                 height: { ideal: 480 }
-            }
-        });
+            };
+        } else {
+            // Laptop/Desktop: prefer front camera (user)
+            videoConstraints = {
+                facingMode: { ideal: "user" },
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            };
+        }
+
+        try {
+            localMediaStream = await navigator.mediaDevices.getUserMedia({
+                video: videoConstraints
+            });
+        } catch (err) {
+            addDiagLog(`Strict constraints failed (${err.message}). Trying fallback.`);
+            // Fallback to default device camera
+            localMediaStream = await navigator.mediaDevices.getUserMedia({
+                video: true
+            });
+        }
         video.srcObject = localMediaStream;
         placeholder.classList.add("hidden");
         addDiagLog("Webcam access granted. Stream rendered at 30 FPS.");
