@@ -229,10 +229,19 @@ async def websocket_stream(websocket: WebSocket):
         logger.error(f"WebSocket execution error: {e}")
         log_event("SYSTEM_ERROR", {"detail": str(e)})
 
-# Serve frontend directory as static files
-frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
-if not os.path.exists(frontend_dir):
+# Serve frontend directory as static files with CWD and relative-file fallbacks
+frontend_dir = os.path.abspath("frontend")
+if not os.path.exists(frontend_dir) or not os.path.exists(os.path.join(frontend_dir, "index.html")):
+    frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
+
+logger.info(f"Resolved frontend directory: {frontend_dir}")
+if os.path.exists(frontend_dir):
+    logger.info(f"Frontend directory contents: {os.listdir(frontend_dir)}")
+else:
+    logger.error(f"Frontend directory NOT found at: {frontend_dir}")
+    # Create fallback to prevent FastAPI crashing
     os.makedirs(frontend_dir, exist_ok=True)
+
 app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 if __name__ == "__main__":
