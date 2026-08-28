@@ -144,7 +144,11 @@ function updateSafetyState(state) {
 async function startWebcam() {
     try {
         localMediaStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 480, facingMode: "environment" }
+            video: {
+                facingMode: { ideal: "environment" },
+                width: { ideal: 640 },
+                height: { ideal: 480 }
+            }
         });
         video.srcObject = localMediaStream;
         placeholder.classList.add("hidden");
