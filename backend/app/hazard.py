@@ -1,152 +1,183 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
-def calculate_hazard_priority(tracked_obj: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Computes the Prototype Hazard Priority Score, Time-to-Interaction (TTI),
-    and maps the result to a formal safety state (SAFE, CAUTION, ALERT, CRITICAL).
-    """
-    obj_class = tracked_obj["class"]
-    bbox = tracked_obj["bbox"]
-    centroid = tracked_obj["centroid"]
-    motion = tracked_obj["motion"]
-    severity = tracked_obj["severity"]
-    height_history = tracked_obj["height_history"]
+# Size classifications for size-aware proximity estimation
+LARGE_HAZARDS = {"car", "truck", "bus", "motorcycle"}
+MEDIUM_HAZARDS = {"person", "chair", "dining table", "dog", "bicycle"}
+SMALL_HAZARDS = {"backpack", "suitcase", "handbag", "bottle", "traffic light", "stop sign", "fire hydrant"}
 
-    # We assume frame dimensions are standard (scaled coordinates sent by client or vision module)
-    # If the bounding box is a fraction [0-1] or absolute pixels, let's normalize heights.
-    # We will compute relative dimensions assuming bounding box coordinates are relative [0-1] or absolute.
-    # Let's inspect coordinates format: YOLO box coordinates are usually pixels, but let's normalize to a standard height range.
-    # To be extremely safe, we'll assume relative scaling if values are <= 1.0, otherwise divide by an assumed standard frame size.
-    # A standard camera frame width/height is usually 640x480.
+def calculate_hazard_priority(obj: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    T08 & T09: Calculates size-aware proximity, multi-corridor direction,
+    and priority risk score (0-100) for a tracked object.
+    """
+    class_name = obj.get("class", "obstacle")
+    confidence = obj.get("confidence", 0.9)
+    motion_state = obj.get("motion", "STATIC").upper() # 'APPROACHING', 'STATIC', 'RETREATING'
     
-    # Calculate box height and horizontal position fraction
-    # Let's check coordinates.
-    y_min, x_min, y_max, x_max = bbox[1], bbox[0], bbox[3], bbox[2]
-    box_height = y_max - y_min
-    box_width = x_max - x_min
+    # 1. Coordinate destructuring & box math
+    bbox = obj.get("bbox", [160, 120, 480, 360])
+    xmin, ymin, xmax, ymax = bbox
+    box_h = ymax - ymin
     
-    # Heuristically normalize height fraction to estimate proximity
-    # If values look like absolute pixels (e.g., > 1.0), normalize using typical webcam 480px height
-    is_absolute = box_height > 1.0
-    height_norm = box_height / 480.0 if is_absolute else box_height
-    cx_norm = centroid[0] / 640.0 if is_absolute else centroid[0]
+    frame_width = 640.0
+    frame_height = 480.0
     
-    # 1. Proximity Factor
-    # NEAR: > 35% height, MEDIUM: 15% - 35% height, FAR: < 15% height
-    if height_norm > 0.35:
-        proximity_factor = 1.0
-        proximity_state = "near"
-    elif height_norm >= 0.15:
-        proximity_factor = 0.6
-        proximity_state = "medium"
+    # 2. T08: Corridor Direction classification (using centroid first, then bounding box center)
+    centroid = obj.get("centroid")
+    if centroid and len(centroid) > 0:
+        x_center = centroid[0]
     else:
-        proximity_factor = 0.2
-        proximity_state = "far"
+        x_center = (xmin + xmax) / 2.0
         
-    # 2. Position Factor
-    # CENTER: 0.35 to 0.65 horizontal coordinate
-    if 0.35 <= cx_norm <= 0.65:
-        position_factor = 1.2
+    x_offset = (x_center - (frame_width / 2.0)) / (frame_width / 2.0)
+    
+    if -0.15 <= x_offset <= 0.15:
         direction = "center"
-    elif cx_norm < 0.35:
-        position_factor = 1.0
+        direction_detail = "direct_center"
+        direction_points = 15.0
+    elif -0.40 <= x_offset < -0.15:
         direction = "left"
-    else:
-        position_factor = 1.0
+        direction_detail = "slight_left"
+        direction_points = 10.0
+    elif 0.15 < x_offset <= 0.40:
         direction = "right"
-        
-    # 3. Motion Factor
-    if motion == "APPROACHING":
-        motion_factor = 1.5
-    elif motion == "RETREATING":
-        motion_factor = 0.5
-    else: # STATIC
-        motion_factor = 1.0
-        
-    # 4. Time-to-Interaction (TTI)
-    # Estimate rate of approach from height history change
-    tti = float("inf")
-    rate_of_approach = 0.0
-    
-    if len(height_history) >= 2:
-        h_curr = height_history[-1]
-        h_prev = height_history[-2]
-        # Normalize history scale
-        if is_absolute:
-            h_curr /= 480.0
-            h_prev /= 480.0
-            
-        dh = h_curr - h_prev
-        if dh > 0: # object is getting larger (approaching)
-            rate_of_approach = dh # rate of height change per frame chunk
-            # TTI in terms of frames = distance proxy / rate
-            # We proxy distance as (1.0 - height_norm) since height approaches 1.0 as it gets extremely close
-            distance_proxy = max(0.01, 1.0 - height_norm)
-            tti = distance_proxy / max(0.005, rate_of_approach)
-            
-    # Calculate Raw Priority Score
-    priority_raw = severity * proximity_factor * motion_factor * position_factor
-    
-    # Normalize score out of 100 by scaling by 100
-    normalized_score = int(priority_raw * 100)
-    
-    # Apply TTI Urgency Bonus (Predictive adjustment)
-    # If the object is approaching fast (low TTI), boost the hazard score
-    reasons = []
-    if severity >= 0.8:
-        reasons.append("high object severity")
-    if proximity_state == "near":
-        reasons.append("near proximity")
-    if motion == "APPROACHING":
-        reasons.append("approaching motion")
-    if direction == "center":
-        reasons.append("directly in path")
+        direction_detail = "slight_right"
+        direction_points = 10.0
+    elif x_offset < -0.40:
+        direction = "left"
+        direction_detail = "far_left"
+        direction_points = 5.0
+    else:
+        direction = "right"
+        direction_detail = "far_right"
+        direction_points = 5.0
 
-    if tti != float("inf") and tti < 5.0: # Less than 5 frames to contact at current rate
-        boost = int((5.0 - tti) * 6) # up to +30 points boost
-        normalized_score = min(100, normalized_score + boost)
-        reasons.append(f"fast approach rate (TTI ~ {round(tti, 1)} frames)")
-        
-    normalized_score = max(0, min(100, normalized_score))
+    # 3. T09: Size-Aware Proximity Estimation based on object height ratio
+    h_ratio = box_h / frame_height
     
-    # Map to safety state
-    if normalized_score >= 81:
+    if class_name in LARGE_HAZARDS:
+        # Cars/trucks: close at smaller screen heights due to physical scale
+        if h_ratio > 0.30:
+            proximity = "near"
+            proximity_points = 35.0
+        elif 0.12 <= h_ratio <= 0.30:
+            proximity = "medium"
+            proximity_points = 20.0
+        else:
+            proximity = "far"
+            proximity_points = 5.0
+            
+    elif class_name in MEDIUM_HAZARDS:
+        # People/chairs: medium scale
+        if h_ratio > 0.40:
+            proximity = "near"
+            proximity_points = 35.0
+        elif 0.18 <= h_ratio <= 0.40:
+            proximity = "medium"
+            proximity_points = 20.0
+        else:
+            proximity = "far"
+            proximity_points = 5.0
+            
+    else:
+        # Small items (backpacks/bottles)
+        if h_ratio > 0.50:
+            proximity = "near"
+            proximity_points = 35.0
+        elif 0.25 <= h_ratio <= 0.50:
+            proximity = "medium"
+            proximity_points = 20.0
+        else:
+            proximity = "far"
+            proximity_points = 5.0
+
+    # 4. T11: Risk Score Logic (Severity * Proximity * Motion * Position * Confidence)
+    severity = obj.get("severity", 0.5)
+    base_score = severity * 50.0
+    
+    # Motion modifiers
+    if motion_state == "APPROACHING":
+        motion_points = 25.0
+    elif motion_state == "RETREATING":
+        motion_points = -25.0
+    else:
+        motion_points = 0.0 # Static gets normal baseline
+
+    # Add points and scale by confidence
+    raw_score = base_score + proximity_points + direction_points + motion_points
+    risk_score = int(min(100, max(0, raw_score * confidence)))
+
+    # Map score to safety levels
+    if risk_score >= 85:
         state = "CRITICAL"
-    elif normalized_score >= 61:
+    elif risk_score >= 65:
         state = "ALERT"
-    elif normalized_score >= 31:
+    elif risk_score >= 35:
         state = "CAUTION"
     else:
         state = "SAFE"
-        
-    # Generate verbal alert warning text
-    direction_phrasing = "ahead" if direction == "center" else f"on your {direction}"
-    
-    if state == "CRITICAL":
-        message = f"Warning! {obj_class.upper()} approaching {direction_phrasing}!"
-    elif state == "ALERT":
-        message = f"Caution. {obj_class} detected {direction_phrasing}."
-    elif state == "CAUTION":
-        message = f"{obj_class} {direction_phrasing}."
+
+    # 5. Logical Explainability reasons
+    reasons = []
+    if severity >= 0.8:
+        reasons.append(f"high-severity {class_name}")
     else:
-        message = "" # No alert for safe state
+        reasons.append(f"detected {class_name}")
         
-    if not reasons:
-        reasons.append("normal tracking")
+    if proximity == "near":
+        reasons.append("near proximity")
+    elif proximity == "medium":
+        reasons.append("medium proximity")
         
+    if direction_detail == "direct_center":
+        reasons.append("direct collision trajectory")
+    elif direction_detail in ["slight_left", "slight_right"]:
+        reasons.append("close side offset")
+        
+    if motion_state == "APPROACHING":
+        reasons.append("approaching motion")
+    elif motion_state == "RETREATING":
+        reasons.append("retreating motion")
+
+    # TTI frame estimator based on consecutive height history tracking
+    height_history = obj.get("height_history", [])
+    growth_rate = 0.0
+    if len(height_history) >= 2:
+        h_prev = height_history[-2]
+        h_curr = height_history[-1]
+        if h_prev > 0:
+            growth_rate = (h_curr - h_prev) / h_prev
+    else:
+        growth_rate = obj.get("growth_rate", 0.0)
+
+    if motion_state == "APPROACHING" and growth_rate > 0:
+        tti = round(1.0 / growth_rate, 1)
+    else:
+        tti = "infinite"
+
+    # Build warning speech message text
+    message = ""
+    if state != "SAFE":
+        direction_prompt = "ahead" if direction == "center" else f"on your {direction}"
+        if state == "CRITICAL":
+            message = f"Warning! {class_name} approaching {direction_prompt}!"
+        else:
+            message = f"Caution. {class_name} {direction_prompt}."
+
     return {
-        "id": tracked_obj["id"],
-        "object": obj_class,
-        "confidence": float(tracked_obj.get("confidence", 0.90)),
-        "direction": direction,
-        "proximity": proximity_state,
-        "motion": motion,
-        "risk": normalized_score,
+        "object": class_name,
         "state": state,
+        "risk": risk_score,
+        "direction": direction,
+        "direction_detail": direction_detail,
+        "proximity": proximity,
+        "motion": motion_state.lower(),
+        "confidence": confidence,
+        "bbox": bbox,
         "message": message,
         "reason": reasons,
-        "tti": "infinite" if tti == float("inf") else round(tti, 2)
+        "tti": tti
     }

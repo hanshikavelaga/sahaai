@@ -7,7 +7,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Define standard COCO hazard classes we care about
+# Expanded standard COCO hazard classes for real-world assistive navigation
 HAZARD_CLASSES = {
     0: "person",
     1: "bicycle",
@@ -16,21 +16,37 @@ HAZARD_CLASSES = {
     5: "bus",
     7: "truck",
     9: "traffic light",
+    10: "fire hydrant",
+    11: "stop sign",
+    15: "cat",
+    16: "dog",
+    24: "backpack",     # Tripping hazard
+    26: "handbag",      # Floor obstruction
+    28: "suitcase",     # Tripping hazard
+    39: "bottle",       # Slipping/tripping hazard
     56: "chair",
     60: "dining table"
 }
 
-# Baseline severities for hazard priority calculations
+# Baseline severities for hazard priority calculations (0.0 to 1.0 scale)
 SEVERITIES = {
     "car": 1.0,
     "truck": 1.0,
     "bus": 1.0,
     "motorcycle": 1.0,
+    "stop sign": 0.8,
+    "fire hydrant": 0.8,
     "bicycle": 0.8,
+    "dog": 0.8,
+    "backpack": 0.7,
+    "suitcase": 0.7,
     "chair": 0.6,
     "dining table": 0.6,
+    "person": 0.6,
     "traffic light": 0.5,
-    "person": 0.5
+    "cat": 0.5,
+    "handbag": 0.5,
+    "bottle": 0.4
 }
 
 # Download official lightweight YOLOv8 nano ONNX model (under 25MB)
@@ -137,7 +153,6 @@ def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
             return detections
         except Exception as e:
             logger.error(f"ONNX inference error: {e}. Falling back to mock detection.")
-            # Fall through to mock detection rather than returning empty/None
 
     # FALLBACK MOCK DETECTION (Triggered if ONNX is disabled or fails)
     mean_val = float(np.mean(image))
