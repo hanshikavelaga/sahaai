@@ -6,23 +6,13 @@ logger = logging.getLogger(__name__)
 
 class ObjectTracker:
     """
-    Lightweight, dependency-free centroid tracker that tracks objects
-    across consecutive video frames and estimates their relative motion
-    (approaching, static, retreating) based on size changes.
+    T10: Centroid tracker with EMA smoothing, hysteresis motion states,
+    and linear velocity projection (track memory) for missed frames.
     """
-    def __init__(self, max_unseen_frames: int = 4):
+    def __init__(self, max_unseen_frames: int = 8):
         self.next_object_id = 0
-        # self.tracked_objects[id] = {
-        #     "id": int,
-        #     "class": str,
-        #     "centroid": (x, y),
-        #     "bbox": [xmin, ymin, xmax, ymax],
-        #     "history": [[xmin, ymin, xmax, ymax], ...],
-        #     "unseen_count": int,
-        #     "motion": str # "APPROACHING", "RETREATING", "STATIC"
-        # }
         self.tracked_objects: Dict[int, Dict[str, Any]] = {}
-        self.max_unseen_frames = max_unseen_frames
+        self.max_unseen_frames = max_unseen_frames # Keep tracks alive up to 8 frames internally
 
     def _calculate_centroid(self, bbox: List[float]) -> Tuple[float, float]:
         xmin, ymin, xmax, ymax = bbox
@@ -31,17 +21,46 @@ class ObjectTracker:
     def _calculate_height(self, bbox: List[float]) -> float:
         return bbox[3] - bbox[1]
 
+    def _predict_unseen_object(self, object_id: int):
+        """
+        Projects coordinates of temporarily lost tracks using velocity estimates.
+        """
+        obj = self.tracked_objects[object_id]
+        obj["unseen_count"] += 1
+        
+        # Project state if within internal memory limit
+        if obj["unseen_count"] <= self.max_unseen_frames:
+            xmin, ymin, xmax, ymax = obj["bbox"]
+            vx = obj.get("vx", 0.0)
+            vy = obj.get("vy", 0.0)
+            vh = obj.get("vh", 0.0)
+            
+            # Apply velocity projections (clamped coordinate drift)
+            xmin_new = xmin + vx
+            ymin_new = ymin + vy
+            xmax_new = xmax + vx
+            ymax_new = ymax + vy + vh
+            
+            # Ensure projected box remains geometrically sound
+            if xmin_new < xmax_new and ymin_new < ymax_new:
+                projected_bbox = [xmin_new, ymin_new, xmax_new, ymax_new]
+                obj["bbox"] = projected_bbox
+                obj["centroid"] = ((xmin_new + xmax_new) / 2.0, (ymin_new + ymax_new) / 2.0)
+                obj["history"].append(projected_bbox)
+                if len(obj["history"]) > 8:
+                    obj["history"].pop(0)
+
     def update(self, detections: List[Dict[str, Any]], frame_width: int, frame_height: int) -> List[Dict[str, Any]]:
         """
         Updates the tracker with the current frame's detections.
-        Returns a list of tracked objects with coordinates, ids, and motion states.
+        Returns a list of active tracks with coordinate projections and motion states.
         """
-        # If no detections, increment unseen count for all tracked objects
+        # If no detections, project all active tracks and clean up expired ones
         if not detections:
             expired_ids = []
-            for obj_id, obj in self.tracked_objects.items():
-                obj["unseen_count"] += 1
-                if obj["unseen_count"] > self.max_unseen_frames:
+            for obj_id in list(self.tracked_objects.keys()):
+                self._predict_unseen_object(obj_id)
+                if self.tracked_objects[obj_id]["unseen_count"] > self.max_unseen_frames:
                     expired_ids.append(obj_id)
             for obj_id in expired_ids:
                 del self.tracked_objects[obj_id]
@@ -49,16 +68,15 @@ class ObjectTracker:
 
         new_centroids = [self._calculate_centroid(d["bbox"]) for d in detections]
         
-        # If no objects are currently tracked, register all detections as new
+        # Register new objects if none are tracked yet
         if not self.tracked_objects:
             for i, det in enumerate(detections):
                 self._register_object(det, new_centroids[i])
         else:
-            # Match existing tracked objects with new detections using Euclidean distance
             object_ids = list(self.tracked_objects.keys())
             object_centroids = [obj["centroid"] for obj in self.tracked_objects.values()]
             
-            # Distance matrix
+            # Euclidean distance matrix
             distances = []
             for obj_c in object_centroids:
                 row = []
@@ -67,14 +85,11 @@ class ObjectTracker:
                     row.append(dist)
                 distances.append(row)
             
-            # Greedy matching: find the minimum distance pairs
+            # Greedy pairing
             used_objects = set()
             used_detections = set()
+            max_match_dist = frame_width * 0.25 # Match corridor threshold
             
-            # Max matching distance threshold (e.g., 25% of frame width)
-            max_match_dist = frame_width * 0.25
-            
-            # Find pairings
             pairings = []
             for o_idx in range(len(object_ids)):
                 for d_idx in range(len(detections)):
@@ -91,31 +106,31 @@ class ObjectTracker:
                 obj_id = object_ids[o_idx]
                 det = detections[d_idx]
                 
-                # Update tracked object
+                # Match found: update existing tracker state
                 self._update_object(obj_id, det, new_centroids[d_idx])
-                
                 used_objects.add(o_idx)
                 used_detections.add(d_idx)
             
-            # Unmatched existing objects: mark as unseen
+            # Unmatched existing objects: mark missed and project next position
             for o_idx, obj_id in enumerate(object_ids):
                 if o_idx not in used_objects:
-                    self.tracked_objects[obj_id]["unseen_count"] += 1
+                    self._predict_unseen_object(obj_id)
             
-            # Delete expired tracked objects
+            # Prune long-lost tracks
             expired_ids = [oid for oid, obj in self.tracked_objects.items() if obj["unseen_count"] > self.max_unseen_frames]
             for oid in expired_ids:
                 del self.tracked_objects[oid]
                 
-            # Register unmatched new detections as new objects
+            # Register brand new detections
             for d_idx, det in enumerate(detections):
                 if d_idx not in used_detections:
                     self._register_object(det, new_centroids[d_idx])
         
-        # Format the return data
+        # Format the active return data
         result = []
         for obj_id, obj in self.tracked_objects.items():
-            if obj["unseen_count"] == 0: # only return active objects in the current frame
+            # Return tracks that are seen, or recently missed (up to 3 frames) to keep UI smooth
+            if obj["unseen_count"] <= 3:
                 result.append({
                     "id": obj_id,
                     "class": obj["class"],
@@ -123,6 +138,10 @@ class ObjectTracker:
                     "centroid": obj["centroid"],
                     "motion": obj["motion"],
                     "severity": obj["severity"],
+                    "vx": obj.get("vx", 0.0),
+                    "vy": obj.get("vy", 0.0),
+                    "growth_rate": obj.get("smoothed_growth", 0.0),
+                    "unseen_count": obj["unseen_count"],
                     "height_history": [self._calculate_height(b) for b in obj["history"]]
                 })
         return result
@@ -135,35 +154,74 @@ class ObjectTracker:
             "history": [detection["bbox"]],
             "unseen_count": 0,
             "motion": "STATIC",
-            "severity": detection["severity"]
+            "severity": detection["severity"],
+            "vx": 0.0,
+            "vy": 0.0,
+            "vh": 0.0,
+            "smoothed_growth": 0.0
         }
         self.next_object_id += 1
 
     def _update_object(self, object_id: int, detection: Dict[str, Any], centroid: Tuple[float, float]):
         obj = self.tracked_objects[object_id]
         
-        # Calculate motion state based on height history (prior to adding the new box)
-        h_current = self._calculate_height(detection["bbox"])
-        h_history = [self._calculate_height(b) for b in obj["history"]]
+        # Previous parameters
+        bbox_prev = obj["bbox"]
+        h_prev = self._calculate_height(bbox_prev)
+        x_c_prev, y_c_prev = obj["centroid"]
         
-        motion = "STATIC"
-        if len(h_history) >= 1:
-            h_prev = h_history[-1]
-            ratio = h_current / h_prev if h_prev > 0 else 1.0
-            
-            # Size increases by more than 8% -> Approaching
-            # Size decreases by more than 8% -> Retreating
-            if ratio > 1.08:
+        # Current parameters
+        bbox_curr = detection["bbox"]
+        h_curr = self._calculate_height(bbox_curr)
+        x_c_curr, y_c_curr = centroid
+        
+        # Calculate instant change velocities
+        inst_vx = x_c_curr - x_c_prev
+        inst_vy = y_c_curr - y_c_prev
+        inst_vh = h_curr - h_prev
+        
+        # EMA smoothing filters (alpha = 0.35)
+        alpha = 0.35
+        obj["vx"] = alpha * inst_vx + (1.0 - alpha) * obj.get("vx", 0.0)
+        obj["vy"] = alpha * inst_vy + (1.0 - alpha) * obj.get("vy", 0.0)
+        obj["vh"] = alpha * inst_vh + (1.0 - alpha) * obj.get("vh", 0.0)
+        
+        # Compute growth rate and smooth it
+        current_growth = (h_curr - h_prev) / h_prev if h_prev > 0 else 0.0
+        obj["smoothed_growth"] = alpha * current_growth + (1.0 - alpha) * obj.get("smoothed_growth", 0.0)
+        
+        # Hysteresis state transition machine
+        smoothed_growth = obj["smoothed_growth"]
+        prev_motion = obj["motion"]
+        
+        if prev_motion == "APPROACHING":
+            if smoothed_growth < 0.02: # Threshold to leave approaching
+                if smoothed_growth < -0.05:
+                    motion = "RETREATING"
+                else:
+                    motion = "STATIC"
+            else:
                 motion = "APPROACHING"
-            elif ratio < 0.92:
+        elif prev_motion == "RETREATING":
+            if smoothed_growth > -0.02: # Threshold to leave retreating
+                if smoothed_growth > 0.05:
+                    motion = "APPROACHING"
+                else:
+                    motion = "STATIC"
+            else:
+                motion = "RETREATING"
+        else: # STATIC
+            if smoothed_growth > 0.05: # Threshold to enter approaching
+                motion = "APPROACHING"
+            elif smoothed_growth < -0.05: # Threshold to enter retreating
                 motion = "RETREATING"
             else:
-                motion = obj["motion"] # Maintain previous motion state if within threshold noise
+                motion = "STATIC"
         
         obj["centroid"] = centroid
-        obj["bbox"] = detection["bbox"]
-        obj["history"].append(detection["bbox"])
-        if len(obj["history"]) > 6:
+        obj["bbox"] = bbox_curr
+        obj["history"].append(bbox_curr)
+        if len(obj["history"]) > 8:
             obj["history"].pop(0)
         obj["unseen_count"] = 0
         obj["motion"] = motion
