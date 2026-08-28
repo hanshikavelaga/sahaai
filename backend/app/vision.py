@@ -38,10 +38,10 @@ ONNX_MODEL_PATH = os.path.abspath("yolov8n.onnx")
 net = None
 
 try:
-    # Self-healing: if file exists but is incomplete (less than 20MB), delete and redownload
+    # Self-healing: if file exists but is incomplete (less than 10MB), delete and redownload
     if os.path.exists(ONNX_MODEL_PATH):
         file_size = os.path.getsize(ONNX_MODEL_PATH)
-        if file_size < 20000000:  # ~20MB threshold
+        if file_size < 10000000:  # 10MB threshold (actual unquantized ONNX is ~12.2MB)
             logger.warning(f"YOLOv8 ONNX model is incomplete ({file_size} bytes). Deleting to force redownload.")
             try:
                 os.remove(ONNX_MODEL_PATH)
@@ -49,8 +49,9 @@ try:
                 logger.error(f"Failed to remove corrupt ONNX file: {remove_err}")
 
     if not os.path.exists(ONNX_MODEL_PATH):
-        logger.info("Memory Optimization: Downloading lightweight YOLOv8 ONNX model (23MB)...")
-        url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
+        logger.info("Memory Optimization: Downloading lightweight YOLOv8 ONNX model (12MB)...")
+        # Direct download from Kalray community weights on Hugging Face (known good and accessible)
+        url = "https://huggingface.co/Kalray/yolov8/resolve/main/yolov8n.onnx"
         urllib.request.urlretrieve(url, ONNX_MODEL_PATH)
         logger.info("ONNX download complete.")
         
