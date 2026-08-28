@@ -38,10 +38,19 @@ ONNX_MODEL_PATH = os.path.abspath("yolov8n.onnx")
 net = None
 
 try:
+    # Self-healing: if file exists but is incomplete (less than 20MB), delete and redownload
+    if os.path.exists(ONNX_MODEL_PATH):
+        file_size = os.path.getsize(ONNX_MODEL_PATH)
+        if file_size < 20000000:  # ~20MB threshold
+            logger.warning(f"YOLOv8 ONNX model is incomplete ({file_size} bytes). Deleting to force redownload.")
+            try:
+                os.remove(ONNX_MODEL_PATH)
+            except Exception as remove_err:
+                logger.error(f"Failed to remove corrupt ONNX file: {remove_err}")
+
     if not os.path.exists(ONNX_MODEL_PATH):
         logger.info("Memory Optimization: Downloading lightweight YOLOv8 ONNX model (23MB)...")
         url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
-        # Download directly via urllib
         urllib.request.urlretrieve(url, ONNX_MODEL_PATH)
         logger.info("ONNX download complete.")
         
@@ -53,6 +62,7 @@ try:
         logger.info("YOLOv8 ONNX loaded successfully using OpenCV DNN (Low-memory mode).")
 except Exception as e:
     logger.error(f"Could not load YOLOv8 ONNX model ({e}). Using mock object detection fallback.")
+    net = None
 
 def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
     """
@@ -126,8 +136,9 @@ def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
             return detections
         except Exception as e:
             logger.error(f"ONNX inference error: {e}. Falling back to mock detection.")
+            # Fall through to mock detection rather than returning empty/None
 
-    # FALLBACK MOCK DETECTION (Triggered only if ONNX fails)
+    # FALLBACK MOCK DETECTION (Triggered if ONNX is disabled or fails)
     mean_val = float(np.mean(image))
     if mean_val > 50:
         if int(mean_val) % 3 == 0:
