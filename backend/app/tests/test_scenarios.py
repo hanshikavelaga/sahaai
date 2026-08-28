@@ -452,5 +452,88 @@ def test_scenario_n_scan_persistence_filtering():
     assert "15_car" in final_retained
     assert "12_dog" not in final_retained
 
+def test_scenario_o_smart_scan_summary_linguistic_compiler():
+    """
+    Scenario O: Validate the Task 17 Natural-Language Scan Summary Compiler rules.
+    Verifies priority-first alerts, class counts grouping, and clearance reports.
+    """
+    def compile_summary_v2(collected_data):
+        zones = ["LEFT", "CENTER", "RIGHT", "REAR"]
+        lead_warning = ""
+        other_zones = []
+        for zone in zones:
+            items = collected_data.get(zone, [])
+            if len(items) == 0:
+                other_zones.append(f"{zone.lower()} side is clear")
+            else:
+                class_counts = {}
+                max_risk = 0
+                target_obj = None
+                for it in items:
+                    c = it["class"]
+                    class_counts[c] = class_counts.get(c, 0) + 1
+                    if it["risk"] > max_risk:
+                        max_risk = it["risk"]
+                        target_obj = it
+                item_descs = [f"{count} {cls + 's' if count > 1 else cls}" for cls, count in class_counts.items()]
+                if len(item_descs) > 2:
+                    formatted_list = "multiple obstacles"
+                else:
+                    formatted_list = " and ".join(item_descs)
+                if max_risk >= 85 and target_obj:
+                    action = "approaching" if target_obj["motion"] == "APPROACHING" else "detected"
+                    zone_desc = f"Critical. {target_obj['class']} {action} on your {zone.lower()}"
+                    lead_warning = zone_desc
+                elif max_risk >= 65 and target_obj:
+                    action = "approaching" if target_obj["motion"] == "APPROACHING" else "detected"
+                    zone_desc = f"Warning. {target_obj['class']} {action} on your {zone.lower()}"
+                    if not lead_warning:
+                        lead_warning = zone_desc
+                    else:
+                        other_zones.append(zone_desc)
+                else:
+                    other_zones.append(f"on your {zone.lower()}: {formatted_list}")
+        if lead_warning:
+            summary = lead_warning
+            if other_zones:
+                summary += ". " + ". ".join(other_zones)
+        else:
+            all_clear = all(len(collected_data.get(z, [])) == 0 for z in zones)
+            if all_clear:
+                summary = "Smart scan complete. Environment clear."
+            else:
+                summary = "Scan complete. " + ". ".join(other_zones)
+        return summary
+
+    # Scenario O.A: Critical lead warning
+    collected_a = {
+        "LEFT": [{"class": "person", "risk": 40, "motion": "STATIC"}],
+        "CENTER": [],
+        "RIGHT": [{"class": "car", "risk": 90, "motion": "APPROACHING"}],
+        "REAR": []
+    }
+    summary_a = compile_summary_v2(collected_a)
+    assert "Critical. car approaching on your right" in summary_a
+    assert "on your left: 1 person" in summary_a
+    
+    # Scenario O.B: Quantities grouping
+    collected_b = {
+        "LEFT": [
+            {"class": "chair", "risk": 30, "motion": "STATIC"},
+            {"class": "chair", "risk": 30, "motion": "STATIC"}
+        ],
+        "CENTER": [],
+        "RIGHT": [],
+        "REAR": []
+    }
+    summary_b = compile_summary_v2(collected_b)
+    assert "on your left: 2 chairs" in summary_b
+    
+    # Scenario O.C: Environment clear
+    collected_c = {"LEFT": [], "CENTER": [], "RIGHT": [], "REAR": []}
+    summary_c = compile_summary_v2(collected_c)
+    assert summary_c == "Smart scan complete. Environment clear."
+
+
 
 

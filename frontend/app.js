@@ -818,9 +818,9 @@ function handleVoiceCommand(command) {
 // Pillar C: Smart Scan Sequence State Machine
 // -------------------------------------------------------------
 // -------------------------------------------------------------
-// Pillar C: Guided Smart Scan Sequence State Machine (T16)
+// Pillar C: Guided Smart Scan Sequence State Machine (T16 & T17)
 // -------------------------------------------------------------
-function triggerSmartScan() {
+async function triggerSmartScan() {
     if (scanState.active) return;
     
     speak("Starting smart environment scan. Please turn slowly to your left.", 30, true);
@@ -835,6 +835,25 @@ function triggerSmartScan() {
     scanState.consecutiveNonCriticalFrames = 0;
     scanState.tempDetections = [];
     scanState.collectedData = { LEFT: [], CENTER: [], RIGHT: [], REAR: [] };
+    
+    scanState.startTime = Date.now();
+    scanState.scanUuid = "mock-scan-uuid";
+    
+    // Register scan session in the background (T17.10)
+    try {
+        const res = await fetch("/api/scan/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: "scan_session_" + Date.now() })
+        });
+        const data = await res.json();
+        if (data.scan_uuid) {
+            scanState.scanUuid = data.scan_uuid;
+            addDiagLog(`Registered scan session with UUID: ${data.scan_uuid}`);
+        }
+    } catch (err) {
+        console.warn("Failed to register scan session, using fallback:", err);
+    }
     
     // Reset visual scan markers
     markLeft.textContent = "○"; markCenter.textContent = "○"; markRight.textContent = "○"; markRear.textContent = "○";
@@ -938,6 +957,9 @@ function processStepCaptureResults() {
     const allFrames = scanState.tempDetections;
     const totalFrames = allFrames.length;
     
+    // Safety relevant classes to filter out noise (T17.5)
+    const SAFETY_CLASSES = ["person", "car", "motorcycle", "bicycle", "bus", "truck", "dog", "backpack", "suitcase", "chair", "stop sign"];
+    
     // Group occurrences by track_id + object_class (T16.2)
     const counts = {};
     const maxRiskMap = {};
@@ -946,6 +968,10 @@ function processStepCaptureResults() {
     
     allFrames.forEach(frame => {
         frame.forEach(det => {
+            const className = det.object.toLowerCase();
+            // Filter noise immediately
+            if (!SAFETY_CLASSES.includes(className)) return;
+            
             const trackId = det.id !== undefined ? det.id : det.object;
             const key = `${trackId}_${det.object}`;
             counts[key] = (counts[key] || 0) + 1;
@@ -958,6 +984,9 @@ function processStepCaptureResults() {
     });
     
     const finalObjects = [];
+    let highestRiskObj = "clear";
+    let maxRiskScore = 0;
+    
     Object.keys(counts).forEach(key => {
         const parts = key.split("_");
         const objectClass = parts[1];
@@ -967,25 +996,48 @@ function processStepCaptureResults() {
         const maxConfidence = maxConfidenceMap[key];
         const isApproaching = motionMap[key] === "approaching";
         
-        // Class-sensitive persistence thresholds
+        // Class-sensitive persistence thresholds (T16.2 + T17.2)
+        // Static require >= 50% (3/5 frames). Moving/Critical require risk >= 85 AND confidence >= 0.85
         let keep = false;
-        if (maxRisk >= 85 || isApproaching) {
-            keep = true; // Retain moving/critical threats
+        if (maxRisk >= 85 && maxConfidence >= 0.85) {
+            keep = true; // Retain critical threat
+        } else if (isApproaching && maxConfidence >= 0.80) {
+            keep = true; // Retain approaching vehicle/person
         } else if (persistence >= 0.50) {
-            keep = true; // Retain static/environmental obstacles
+            keep = true; // Retain stable environmental hazard
         }
         
         if (keep) {
             finalObjects.push({
                 class: objectClass,
                 risk: maxRisk,
-                confidence: maxConfidence
+                confidence: maxConfidence,
+                motion: isApproaching ? "APPROACHING" : "STATIC"
             });
+            
+            if (maxRisk > maxRiskScore) {
+                maxRiskScore = maxRisk;
+                highestRiskObj = objectClass;
+            }
         }
     });
     
     scanState.collectedData[step] = finalObjects;
     addDiagLog(`Scan step ${step} complete. Captured: ${JSON.stringify(finalObjects)}`);
+    
+    // Log result for this sector to the database in background (T17.10)
+    if (scanState.scanUuid) {
+        fetch("/api/scan/result", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                scan_uuid: scanState.scanUuid,
+                direction: step,
+                hazard: highestRiskObj,
+                risk_score: maxRiskScore
+            })
+        }).catch(err => console.warn("Failed to log scan result:", err));
+    }
     
     markStepCompleteUI(step);
     advanceScanStep();
@@ -1038,26 +1090,111 @@ function compileScanSummary() {
     scanInstruction.textContent = "Compiling environmental scan results...";
     speak("Scan complete. Summarizing findings.", 30, true);
     
-    // Group collected data into a friendly summary sentence (T17 preview)
-    const summaryParts = [];
     const zones = ["LEFT", "CENTER", "RIGHT", "REAR"];
+    let leadWarningText = "";
+    const otherZonesParts = [];
+    let criticalCount = 0;
+    let highRiskCount = 0;
     
     zones.forEach(zone => {
-        const items = scanState.collectedData[zone];
+        const items = scanState.collectedData[zone] || [];
+        
         if (items.length === 0) {
-            summaryParts.push(`${zone.toLowerCase()} side is clear`);
+            otherZonesParts.push(`${zone.toLowerCase()} side is clear`);
         } else {
-            const desc = items.map(it => it.class).join(" and ");
-            summaryParts.push(`${zone.toLowerCase()}: ${desc} detected`);
+            const classCounts = {};
+            let zoneMaxRisk = 0;
+            let targetObj = null;
+            
+            items.forEach(it => {
+                classCounts[it.class] = (classCounts[it.class] || 0) + 1;
+                if (it.risk > zoneMaxRisk) {
+                    zoneMaxRisk = it.risk;
+                    targetObj = it;
+                }
+                if (it.risk >= 85) {
+                    criticalCount++;
+                } else if (it.risk >= 65) {
+                    highRiskCount++;
+                }
+            });
+            
+            // Format grouped item count text (T17.4)
+            const itemDescs = Object.keys(classCounts).map(className => {
+                const count = classCounts[className];
+                const plural = count > 1 ? (className.endsWith("s") ? className : className + "s") : className;
+                return `${count} ${plural}`;
+            });
+            
+            // Apply summary length limit (T17.6)
+            let formattedList = "";
+            if (itemDescs.length > 2) {
+                formattedList = "multiple obstacles";
+            } else {
+                formattedList = itemDescs.join(" and ");
+            }
+            
+            // Build motion-aware actionability wording (T17.1 + T17.3)
+            let zoneDesc = "";
+            if (zoneMaxRisk >= 85 && targetObj) {
+                // Critical
+                const actionWord = targetObj.motion === "APPROACHING" ? "approaching" : "detected";
+                zoneDesc = `Critical. ${targetObj.class} ${actionWord} on your ${zone.toLowerCase()}`;
+                leadWarningText = zoneDesc;
+            } else if (zoneMaxRisk >= 65 && targetObj) {
+                // Warning
+                const actionWord = targetObj.motion === "APPROACHING" ? "approaching" : "detected";
+                zoneDesc = `Warning. ${targetObj.class} ${actionWord} on your ${zone.toLowerCase()}`;
+                if (!leadWarningText) {
+                    leadWarningText = zoneDesc;
+                } else {
+                    otherZonesParts.push(zoneDesc);
+                }
+            } else {
+                // Standard info
+                otherZonesParts.push(`on your ${zone.toLowerCase()}: ${formattedList}`);
+            }
         }
     });
     
-    const summaryText = "Smart environmental scan complete. " + summaryParts.join(". ") + ".";
+    // Assemble final output sentence structure (T17.7)
+    let summaryText = "";
+    if (leadWarningText) {
+        summaryText = leadWarningText;
+        if (otherZonesParts.length > 0) {
+            summaryText += ". " + otherZonesParts.join(". ");
+        }
+    } else {
+        const allClear = zones.every(z => (scanState.collectedData[z] || []).length === 0);
+        if (allClear) {
+            summaryText = "Smart scan complete. Environment clear.";
+        } else {
+            summaryText = "Scan complete. " + otherZonesParts.join(". ");
+        }
+    }
+    
+    // Clean string formats
+    summaryText = summaryText.replace(/\.+/g, ".").trim();
+    if (!summaryText.endsWith(".")) summaryText += ".";
+    
+    // Play with priority 60 (ALERT level) (T17.8)
+    const alertObject = {
+        state: criticalCount > 0 ? "CRITICAL" : (highRiskCount > 0 ? "ALERT" : "SAFE"),
+        object: "scan_summary",
+        risk: criticalCount > 0 ? 90 : (highRiskCount > 0 ? 70 : 0),
+        message: summaryText,
+        direction: "around",
+        proximity: "none",
+        motion: "static"
+    };
     
     setTimeout(() => {
         try { scanDialog.close(); } catch (e) {}
-        speak(summaryText, 60, true);
+        
+        // Handoff to T13 Speech preemption and live regions (T17.2)
+        processSafetyAlert(alertObject, true);
         addDiagLog(`Smart Scan Complete: "${summaryText}"`);
+        
         scanState.active = false;
         scanState.currentStep = "OFF";
     }, 1200);

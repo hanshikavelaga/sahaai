@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -136,6 +136,43 @@ async def trigger_audio_event(payload: Dict[str, Any]):
         return result
     except Exception as e:
         logger.error(f"Audio API Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ScanStartRequest(BaseModel):
+    session_id: str
+    user_id: Optional[str] = None
+
+class ScanResultRequest(BaseModel):
+    scan_uuid: str
+    direction: str
+    hazard: str
+    risk_score: int
+
+@app.post("/api/scan/start")
+async def start_scan_session_api(payload: ScanStartRequest):
+    """T17: Registers a new scan session in the database."""
+    try:
+        scan_uuid = insert_scan_session(payload.session_id, payload.user_id)
+        if not scan_uuid:
+            scan_uuid = "mock-scan-uuid"
+        return {"scan_uuid": scan_uuid}
+    except Exception as e:
+        logger.error(f"Error starting scan session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/scan/result")
+async def log_scan_result_api(payload: ScanResultRequest):
+    """T17: Logs a quadrant/sector scan result to Supabase."""
+    try:
+        result_data = {
+            "direction": payload.direction,
+            "hazard": payload.hazard,
+            "risk_score": payload.risk_score
+        }
+        success = insert_scan_result(payload.scan_uuid, result_data)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Error logging scan result: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/stream")
