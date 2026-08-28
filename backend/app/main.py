@@ -48,6 +48,15 @@ from backend.app.tracking import ObjectTracker
 from backend.app.hazard import calculate_hazard_priority
 from backend.app.attention import prioritize_alerts
 from backend.app.audio import analyze_audio_chunk
+from backend.app.database import (
+    insert_hazard_event,
+    insert_audio_event,
+    insert_fusion_event,
+    insert_ocr_event,
+    insert_emergency_event,
+    insert_scan_session,
+    insert_scan_result
+)
 
 # Initialize persistent tracker
 tracker = ObjectTracker()
@@ -87,6 +96,14 @@ async def perform_ocr(payload: OCRRequest):
             pass
 
         log_event("OCR_TRIGGER", {"text": text, "confidence": confidence})
+        
+        # Log to Supabase database in the background
+        asyncio.create_task(asyncio.to_thread(insert_ocr_event, {
+            "session_id": "ocr_on_demand",
+            "extracted_text": text,
+            "confidence": confidence
+        }))
+        
         return {"text": text, "confidence": confidence}
     except Exception as e:
         logger.error(f"OCR Error: {e}")
@@ -192,6 +209,16 @@ async def websocket_stream(websocket: WebSocket):
                             "confidence": audio_res["confidence"],
                             "message": audio_res["message"]
                         })
+                        
+                        # Log audio hazard event to Supabase in the background
+                        asyncio.create_task(asyncio.to_thread(insert_audio_event, {
+                            "session_id": "active_walk_session",
+                            "sound_type": audio_res["sound_type"],
+                            "confidence": audio_res["confidence"],
+                            "amplitude_rms": audio_res.get("amplitude_rms", 0.05),
+                            "peak_frequency_hz": audio_res.get("peak_frequency_hz", 800.0),
+                            "safety_state": "ALERT"
+                        }))
                 except Exception as e:
                     logger.error(f"Audio processing error: {e}")
 
@@ -203,7 +230,7 @@ async def websocket_stream(websocket: WebSocket):
             # 5. Pass to Attention Engine
             response_alert = prioritize_alerts(fused_candidates, scan_mode, orientation)
             
-            # Log significant detections (CAUTION/ALERT/CRITICAL states)
+            # Log significant detections (CAUTION/ALERT/CRITICAL states) to memory and database
             if response_alert and response_alert.get("state") != "SAFE":
                 log_event("HAZARD_EVALUATION", {
                     "object": response_alert.get("object"),
@@ -213,6 +240,25 @@ async def websocket_stream(websocket: WebSocket):
                     "reason": response_alert.get("reason"),
                     "confidence": response_alert.get("confidence")
                 })
+                
+                # Push hazard event to Supabase in the background thread
+                asyncio.create_task(asyncio.to_thread(insert_hazard_event, {
+                    **response_alert,
+                    "session_id": "active_walk_session"
+                }))
+                
+                # Push Fusion event if both Vision and Audio sensors triggered active hazards
+                if audio_alert and len(frame_detections) > 0:
+                    asyncio.create_task(asyncio.to_thread(insert_fusion_event, {
+                        "session_id": "active_walk_session",
+                        "vision_detected": True,
+                        "audio_detected": True,
+                        "motion_detected": any(o.get("motion") == "APPROACHING" for o in frame_detections),
+                        "object_type": frame_detections[0].get("object"),
+                        "sound_type": audio_res.get("sound_type", "siren") if 'audio_res' in locals() else "siren",
+                        "final_risk": response_alert.get("risk"),
+                        "final_level": response_alert.get("state")
+                    }))
             
             # Send result back to client
             await websocket.send_text(json.dumps({

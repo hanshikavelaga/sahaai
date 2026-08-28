@@ -93,12 +93,16 @@ def analyze_audio_chunk(raw_bytes: bytes) -> Dict[str, Any]:
                 # Scale confidence on amplitude and peak ratio
                 result["confidence"] = float(min(0.95, 0.4 + (rms * 0.5) + (peak_ratio * 0.02)))
                 result["message"] = "Possible vehicle sound detected nearby."
+                result["amplitude_rms"] = rms
+                result["peak_frequency_hz"] = peak_freq
                 logger.info(f"Audio detector: HORN matched. Freq={peak_freq:.1f}Hz, Peak Ratio={peak_ratio:.1f}")
             elif 600.0 <= peak_freq <= 1500.0:
                 result["detected"] = True
                 result["sound_type"] = "siren"
                 result["confidence"] = float(min(0.98, 0.5 + (rms * 0.4) + (peak_ratio * 0.02)))
                 result["message"] = "Warning. Emergency siren sound detected nearby."
+                result["amplitude_rms"] = rms
+                result["peak_frequency_hz"] = peak_freq
                 logger.info(f"Audio detector: SIREN matched. Freq={peak_freq:.1f}Hz, Peak Ratio={peak_ratio:.1f}")
 
     except Exception as e:

@@ -8,3 +8,5 @@ numpy
 scipy
 python-multipart
 pytest
+supabase
+python-dotenv
