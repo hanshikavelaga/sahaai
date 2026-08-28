@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -8,17 +8,20 @@ LARGE_HAZARDS = {"car", "truck", "bus", "motorcycle"}
 MEDIUM_HAZARDS = {"person", "chair", "dining table", "dog", "bicycle"}
 SMALL_HAZARDS = {"backpack", "suitcase", "handbag", "bottle", "traffic light", "stop sign", "fire hydrant"}
 
-def calculate_hazard_priority(obj: Dict[str, Any]) -> Dict[str, Any]:
+# Motor vehicles target class list for horn/siren audio fusion confirmation
+MOTOR_VEHICLES = {"car", "truck", "bus", "motorcycle"}
+
+def calculate_hazard_priority(obj: Dict[str, Any], audio_event: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    T11: Velocity-Aware Risk Engine that incorporates object severity,
-    size-aware proximity, trajectory direction, motion changes, approach velocity
-    (Time-to-Threat), and scales by a non-linear confidence factor.
+    T11: Velocity-Aware and Audio-Modulated Risk Engine. Incorporates object severity,
+    proximity, trajectory, motion (approaching velocity), and adds audio risk modifiers
+    if a confirmed sound (horn/siren) is synchronized, scaling by a non-linear confidence factor.
     """
     class_name = obj.get("class", "obstacle")
     confidence = obj.get("confidence", 0.9)
-    motion_state = obj.get("motion", "STATIC").upper() # 'APPROACHING', 'STATIC', 'RETREATING'
+    motion_state = obj.get("motion", "STATIC").upper()
     
-    # 1. Bbox coordinate mapping
+    # 1. Coordinate mapping
     bbox = obj.get("bbox", [160, 120, 480, 360])
     xmin, ymin, xmax, ymax = bbox
     box_h = ymax - ymin
@@ -109,18 +112,31 @@ def calculate_hazard_priority(obj: Dict[str, Any]) -> Dict[str, Any]:
     velocity_boost = 0.0
     if motion_state == "APPROACHING":
         motion_points = 20.0
-        # Dynamic approach velocity boost (up to +15 extra points for rapid movements)
         if growth_rate > 0:
             velocity_boost = min(15.0, growth_rate * 50.0)
     elif motion_state == "RETREATING":
         motion_points = -15.0
     else:
-        motion_points = 5.0 # Static gets minor baseline score
+        motion_points = 5.0
+
+    # 6. T11 Multimodal Audio Fusion Modifier
+    audio_points = 0.0
+    audio_reason = None
+    if audio_event and audio_event.get("sound"):
+        sound_type = audio_event["sound"]
+        # Confirm threat is a motor vehicle (bicycles excluded)
+        if class_name in MOTOR_VEHICLES:
+            if sound_type == "HORN":
+                audio_points = 15.0
+                audio_reason = "audio verified threat (horn)"
+            elif sound_type == "SIREN":
+                audio_points = 18.0
+                audio_reason = "audio verified threat (siren)"
 
     # Compute raw hazard sum
-    raw_score = base_score + proximity_points + direction_points + motion_points + velocity_boost
+    raw_score = base_score + proximity_points + direction_points + motion_points + velocity_boost + audio_points
     
-    # Non-linear confidence scaling (suppresses low-confidence noise heavily)
+    # Non-linear confidence scaling
     confidence_factor = confidence ** 1.5
     risk_score = int(min(100, max(0, raw_score * confidence_factor)))
 
@@ -164,13 +180,17 @@ def calculate_hazard_priority(obj: Dict[str, Any]) -> Dict[str, Any]:
             reasons.append("approaching motion")
     elif motion_state == "RETREATING":
         reasons.append("retreating motion")
+        
+    if audio_reason:
+        reasons.append(audio_reason)
 
     # Build warning speech message text
     message = ""
     if state != "SAFE":
         direction_prompt = "ahead" if direction == "center" else f"on your {direction}"
         if state == "CRITICAL":
-            message = f"Warning! {class_name} approaching {direction_prompt}!"
+            # Shortened, high-priority alert wording (T13.3)
+            message = f"Critical. {class_name} approaching {direction_prompt}!"
         else:
             message = f"Caution. {class_name} {direction_prompt}."
 

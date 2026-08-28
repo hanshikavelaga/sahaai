@@ -47,7 +47,7 @@ from backend.app.vision import detect_objects
 from backend.app.tracking import ObjectTracker
 from backend.app.hazard import calculate_hazard_priority
 from backend.app.attention import prioritize_alerts
-from backend.app.audio import analyze_audio_chunk
+from backend.app.audio import analyze_audio_chunk, AdaptiveAudioDetector
 from backend.app.database import (
     insert_hazard_event,
     insert_audio_event,
@@ -58,8 +58,9 @@ from backend.app.database import (
     insert_scan_result
 )
 
-# Initialize persistent tracker
+# Initialize persistent tracker and audio event detector
 tracker = ObjectTracker()
+audio_detector = AdaptiveAudioDetector()
 
 class OCRRequest(BaseModel):
     image_base64: str
@@ -153,16 +154,39 @@ async def websocket_stream(websocket: WebSocket):
             data = await websocket.receive_text()
             payload = json.loads(data)
             
-            # 1. Parse image payload
+            # 1. Parse payloads
             image_data = payload.get("image")
-            audio_data = payload.get("audio") # optional audio buffer
+            audio_data = payload.get("audio") # optional legacy audio buffer
+            audio_features = payload.get("audio_features") # T14 audio spectral features
             orientation = payload.get("orientation") # optional dict: {alpha, beta, gamma}
             scan_mode = payload.get("scan_mode", False) # True if user is in active Smart Scan
             
             alerts = []
             frame_detections = []
+            audio_res = None
             
-            # 2. Process image frame
+            # 2. Process audio features or legacy audio chunks (T14)
+            if audio_features:
+                try:
+                    audio_res = audio_detector.process_features(audio_features)
+                except Exception as e:
+                    logger.error(f"Error processing audio features: {e}")
+            elif audio_data:
+                # Legacy raw audio chunks processing
+                try:
+                    raw_audio = base64.b64decode(audio_data)
+                    legacy_res = analyze_audio_chunk(raw_audio)
+                    if legacy_res["detected"]:
+                        audio_res = {
+                            "sound": legacy_res["sound_type"].upper(),
+                            "confidence": legacy_res["confidence"],
+                            "timestamp": 0
+                        }
+                except Exception as e:
+                    logger.error(f"Legacy audio processing error: {e}")
+
+            # 3. Process image frame
+            raw_detections = []
             if image_data:
                 try:
                     # Decode base64 image
@@ -176,57 +200,61 @@ async def websocket_stream(websocket: WebSocket):
                         # Run YOLO object detection
                         raw_detections = detect_objects(img)
                         
-                        # Update Tracker & Motion
+                        # Update Tracker & Motion (T10)
                         tracked_objects = tracker.update(raw_detections, frame_width, frame_height)
                         
-                        # Process each tracked object through Hazard Priority Engine
+                        # Process each tracked object through Hazard Priority Engine with Audio Fusion (T11)
                         for obj in tracked_objects:
-                            hazard_info = calculate_hazard_priority(obj)
+                            hazard_info = calculate_hazard_priority(obj, audio_event=audio_res)
                             hazard_info["bbox"] = obj.get("bbox") # Preserve bounding box for client rendering
                             frame_detections.append(hazard_info)
                 except Exception as e:
                     logger.error(f"Frame processing error: {e}")
-            
-            # 3. Process audio chunks if provided
-            audio_alert = None
-            if audio_data:
-                try:
-                    raw_audio = base64.b64decode(audio_data)
-                    audio_res = analyze_audio_chunk(raw_audio)
-                    if audio_res["detected"]:
-                        audio_alert = {
-                            "object": "sound_pattern",
-                            "confidence": audio_res["confidence"],
-                            "direction": "around",
-                            "proximity": "near",
-                            "motion": "approaching",
-                            "risk": int(audio_res["confidence"] * 100),
-                            "state": "ALERT",
-                            "message": audio_res["message"],
-                            "reason": ["periodic frequency peaks detected in audio buffer"]
-                        }
-                        log_event("AUDIO_HAZARD", {
-                            "sound": audio_res["sound_type"],
-                            "confidence": audio_res["confidence"],
-                            "message": audio_res["message"]
-                        })
-                        
-                        # Log audio hazard event to Supabase in the background
-                        asyncio.create_task(asyncio.to_thread(insert_audio_event, {
-                            "session_id": "active_walk_session",
-                            "sound_type": audio_res["sound_type"],
-                            "confidence": audio_res["confidence"],
-                            "amplitude_rms": audio_res.get("amplitude_rms", 0.05),
-                            "peak_frequency_hz": audio_res.get("peak_frequency_hz", 800.0),
-                            "safety_state": "ALERT"
-                        }))
-                except Exception as e:
-                    logger.error(f"Audio processing error: {e}")
 
             # 4. Integrate Sensor Fusion (Visuals + Audio)
             fused_candidates = list(frame_detections)
-            if audio_alert:
-                fused_candidates.append(audio_alert)
+            audio_alert = None
+            
+            if audio_res and audio_res.get("sound"):
+                sound_type = audio_res["sound"]
+                confidence = audio_res["confidence"]
+                
+                # Check if any motor vehicle was detected in the frame for audio-vision alignment
+                MOTOR_VEHICLES = {"car", "truck", "bus", "motorcycle"}
+                has_motor_vehicle = any(d.get("class") in MOTOR_VEHICLES for d in raw_detections)
+                
+                # If no motor vehicles are present, raise an independent caution alert (no panic)
+                if not has_motor_vehicle and confidence >= 0.70:
+                    sound_label = "horn" if sound_type == "HORN" else "siren"
+                    audio_alert = {
+                        "object": sound_label,
+                        "state": "CAUTION",
+                        "risk": 45,
+                        "direction": "around",
+                        "proximity": "near",
+                        "motion": "static",
+                        "confidence": confidence,
+                        "message": f"Caution. {sound_label.capitalize()} detected nearby.",
+                        "reason": [f"high-confidence audio event ({sound_label})"],
+                        "tti": "infinite"
+                    }
+                    fused_candidates.append(audio_alert)
+                    
+                    log_event("AUDIO_HAZARD", {
+                        "sound": sound_label,
+                        "confidence": confidence,
+                        "message": audio_alert["message"]
+                    })
+                    
+                    # Log audio hazard event to Supabase in the background
+                    asyncio.create_task(asyncio.to_thread(insert_audio_event, {
+                        "session_id": "active_walk_session",
+                        "sound_type": sound_label,
+                        "confidence": confidence,
+                        "amplitude_rms": audio_features.get("rms", 0.05) if audio_features else 0.05,
+                        "peak_frequency_hz": audio_features.get("peak_hz", 500.0) if audio_features else 500.0,
+                        "safety_state": "CAUTION"
+                    }))
                 
             # 5. Pass to Attention Engine
             response_alert = prioritize_alerts(fused_candidates, scan_mode, orientation)

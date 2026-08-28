@@ -343,6 +343,136 @@ function processSafetyAlert(alert, isDemo = false) {
 }
 
 // -------------------------------------------------------------
+// Web Audio FFT Pipeline & Feature Extractor (T14)
+// -------------------------------------------------------------
+let audioCtx = null;
+let audioAnalyser = null;
+let audioStream = null;
+let audioSource = null;
+
+async function startAudio() {
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) {
+            addDiagLog("Web Audio API is not supported in this browser.");
+            return;
+        }
+        
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioCtx = new AudioContext();
+        audioAnalyser = audioCtx.createAnalyser();
+        audioAnalyser.fftSize = 2048;
+        
+        audioSource = audioCtx.createMediaStreamSource(audioStream);
+        audioSource.connect(audioAnalyser);
+        addDiagLog("Microphone capture active. FFT spectral analysis initialized.");
+    } catch (err) {
+        addDiagLog(`Audio capture error: ${err.message}. Running without mic support.`);
+    }
+}
+
+function stopAudio() {
+    if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+    }
+    if (audioSource) {
+        audioSource.disconnect();
+        audioSource = null;
+    }
+    if (audioCtx) {
+        audioCtx.close();
+        audioCtx = null;
+    }
+    audioAnalyser = null;
+}
+
+function getAudioFeatures() {
+    if (!audioAnalyser || !audioCtx) return null;
+    
+    const bufferLength = audioAnalyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    audioAnalyser.getByteFrequencyData(dataArray);
+    
+    // Calculate RMS in time domain
+    const timeData = new Uint8Array(bufferLength);
+    audioAnalyser.getByteTimeDomainData(timeData);
+    
+    let sumSquares = 0;
+    for (let i = 0; i < bufferLength; i++) {
+        const val = (timeData[i] - 128) / 128.0;
+        sumSquares += val * val;
+    }
+    const rms = Math.sqrt(sumSquares / bufferLength);
+    
+    const sampleRate = audioCtx.sampleRate;
+    let maxVal = -1;
+    let peakBin = 0;
+    
+    let sumAmps = 0;
+    let sumCentroid = 0;
+    let sumBandwidth = 0;
+    let logSumAmps = 0;
+    let numBins = 0;
+    
+    for (let i = 0; i < bufferLength; i++) {
+        const amp = dataArray[i] / 255.0;
+        const freq = i * (sampleRate / 2.0) / bufferLength;
+        
+        if (freq >= 100) {
+            numBins++;
+            sumAmps += amp;
+            sumCentroid += amp * freq;
+            logSumAmps += Math.log(Math.max(1e-7, amp));
+            
+            if (amp > maxVal) {
+                maxVal = amp;
+                peakBin = i;
+            }
+        }
+    }
+    
+    if (sumAmps === 0) {
+        return {
+            rms: rms,
+            peak_hz: 0.0,
+            centroid_hz: 0.0,
+            bandwidth_hz: 0.0,
+            flatness: 1.0,
+            peak_strength: 0.0,
+            timestamp: Date.now()
+        };
+    }
+    
+    const peakHz = peakBin * (sampleRate / 2.0) / bufferLength;
+    const centroidHz = sumCentroid / sumAmps;
+    
+    for (let i = 0; i < bufferLength; i++) {
+        const amp = dataArray[i] / 255.0;
+        const freq = i * (sampleRate / 2.0) / bufferLength;
+        if (freq >= 100) {
+            sumBandwidth += amp * Math.pow(freq - centroidHz, 2);
+        }
+    }
+    const bandwidthHz = Math.sqrt(sumBandwidth / sumAmps);
+    
+    const geometricMean = Math.exp(logSumAmps / numBins);
+    const arithmeticMean = sumAmps / numBins;
+    const flatness = arithmeticMean > 0 ? geometricMean / arithmeticMean : 1.0;
+    const peakStrength = maxVal / Math.max(0.01, arithmeticMean);
+    
+    return {
+        rms: parseFloat(rms.toFixed(4)),
+        peak_hz: parseFloat(peakHz.toFixed(1)),
+        centroid_hz: parseFloat(centroidHz.toFixed(1)),
+        bandwidth_hz: parseFloat(bandwidthHz.toFixed(1)),
+        flatness: parseFloat(flatness.toFixed(4)),
+        peak_strength: parseFloat(peakStrength.toFixed(2)),
+        timestamp: Date.now()
+    };
+}
+
+// -------------------------------------------------------------
 // Diagnostics Drawer Log Helpers
 // -------------------------------------------------------------
 function addDiagLog(message) {
@@ -564,9 +694,13 @@ function sendFrameToBackend() {
         tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
         const base64Image = tempCanvas.toDataURL("image/jpeg", 0.6);
         
+        // Extract 6 real-time audio spectral features (T14)
+        const audioFeatures = getAudioFeatures();
+        
         socket.send(JSON.stringify({
             image: base64Image,
-            scan_mode: scanState.active
+            scan_mode: scanState.active,
+            audio_features: audioFeatures
         }));
     }
 }
@@ -831,7 +965,7 @@ function toggleSafetyMode() {
         addDiagLog("Safety companion activated.");
         
         if (isLiveMode) {
-            startWebcam().then(initWebSocket);
+            startWebcam().then(() => startAudio().then(initWebSocket));
         } else {
             addDiagLog("Running Demo walk scenario playback.");
             updateFooterStatus(true);
@@ -851,6 +985,7 @@ function toggleSafetyMode() {
         
         if (isLiveMode) {
             stopWebcam();
+            stopAudio();
             if (socket) {
                 socket.close();
                 socket = null;

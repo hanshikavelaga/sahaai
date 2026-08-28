@@ -74,7 +74,7 @@ def test_scenario_c_approaching_car_tracking():
     hazard_res = calculate_hazard_priority(res2[0])
     
     assert hazard_res["state"] == "CRITICAL"
-    assert "Warning!" in hazard_res["message"]
+    assert "Critical" in hazard_res["message"]
     assert float(hazard_res["tti"]) < float("inf")
 
 def test_scenario_d_audio_siren():
@@ -169,3 +169,105 @@ def test_scenario_f_cooldown_suppression():
     res2 = prioritize_alerts([chair_hazard])
     assert res2["message"] == ""
     assert any("cooldown" in r for r in res2["reason"])
+
+def test_scenario_g_audio_vision_fusion():
+    """
+    Scenario G: Vision detects a static car, and microphone registers a synchronized horn event.
+    Verify that the risk engine adds a +15.0 audio risk modifier to the vehicle.
+    """
+    from backend.app.vision import SEVERITIES
+    
+    mock_car = {
+        "id": 4,
+        "class": "car",
+        "bbox": [100, 100, 200, 180], # height = 80px
+        "centroid": [300, 160],
+        "motion": "STATIC",
+        "severity": SEVERITIES["car"],
+        "height_history": [80, 80],
+        "confidence": 0.90
+    }
+    
+    # Baseline run (no audio)
+    res_no_audio = calculate_hazard_priority(mock_car)
+    
+    # Audio-fused run
+    mock_audio_event = {"sound": "HORN", "confidence": 0.85, "timestamp": int(time.time() * 1000)}
+    res_with_audio = calculate_hazard_priority(mock_car, audio_event=mock_audio_event)
+    
+    assert res_with_audio["risk"] > res_no_audio["risk"]
+    assert any("audio verified threat (horn)" in r for r in res_with_audio["reason"])
+
+def test_scenario_h_audio_only_caution():
+    """
+    Scenario H: Test the client-side feature parser and noise floor classifier.
+    Verify that consecutive steady horn features trigger a HORN classification.
+    """
+    from backend.app.audio import AdaptiveAudioDetector
+    detector = AdaptiveAudioDetector()
+    
+    # 1. Calibrate noise floor with 6 quiet frames
+    for i in range(6):
+        res = detector.process_features({
+            "rms": 0.005,
+            "peak_hz": 200.0,
+            "centroid_hz": 200.0,
+            "bandwidth_hz": 30.0,
+            "flatness": 0.5,
+            "peak_strength": 0.1,
+            "timestamp": i * 330
+        })
+        assert res["sound"] is None
+        
+    # 2. Feed sustained car horn tone (4 frames)
+    # Pitch is steady at 500Hz, flatness is very low, strength is high, RMS is loud (0.15)
+    horn_res = None
+    for i in range(4):
+        horn_res = detector.process_features({
+            "rms": 0.15,
+            "peak_hz": 500.0,
+            "centroid_hz": 500.0,
+            "bandwidth_hz": 20.0,
+            "flatness": 0.05,
+            "peak_strength": 0.8,
+            "timestamp": (6 + i) * 330
+        })
+        
+    assert horn_res["sound"] == "HORN"
+    assert horn_res["confidence"] > 0.60
+
+def test_scenario_i_adaptive_audio_vocal_filter():
+    """
+    Scenario I: Play vocal sweep noise.
+    Verify that voice jitter and high flatness ratios are ignored.
+    """
+    from backend.app.audio import AdaptiveAudioDetector
+    detector = AdaptiveAudioDetector()
+    
+    # Calibrate noise floor
+    for i in range(6):
+        detector.process_features({
+            "rms": 0.005,
+            "peak_hz": 200.0,
+            "centroid_hz": 200.0,
+            "bandwidth_hz": 30.0,
+            "flatness": 0.5,
+            "peak_strength": 0.1,
+            "timestamp": i * 330
+        })
+        
+    # Erratic human voice features (frequency sweeps but high flatness and low strength)
+    vocal_res = None
+    for i in range(4):
+        vocal_res = detector.process_features({
+            "rms": 0.08,
+            "peak_hz": 600.0 + (i * 200.0), # sweeping rapidly (600, 800, 1000, 1200)
+            "centroid_hz": 800.0,
+            "bandwidth_hz": 400.0, # wide speech bandwidth
+            "flatness": 0.40,      # noisy flatness
+            "peak_strength": 0.30, # weak peak dominance
+            "timestamp": (6 + i) * 330
+        })
+        
+    assert vocal_res["sound"] is None
+
