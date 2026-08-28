@@ -171,6 +171,11 @@
     <!-- Smart Scan Sequence Modal -->
     <dialog id="scanDialog" class="bg-slate-900 text-white rounded-2xl border-2 border-slate-800 p-6 max-w-sm w-full backdrop:bg-slate-950/85 shadow-2xl">
         <div class="flex flex-col space-y-4">
+            <!-- Pause banner alert for critical override state (T16) -->
+            <div id="scanPauseBanner" class="hidden bg-red-950 border border-red-800 text-red-300 px-3 py-2 rounded-xl text-xs font-black uppercase text-center animate-pulse">
+                ⚠️ SCAN PAUSED - ENVIRONMENT DANGER
+            </div>
+            
             <h3 class="text-lg font-black uppercase tracking-wider text-amber-200">🔄 SMART SCANNING</h3>
             <p id="scanInstruction" class="text-sm font-semibold text-slate-300">Please turn slowly to your left...</p>
             
@@ -181,9 +186,15 @@
                 <div id="scanRear">REAR<br><span class="text-base" id="markRear">○</span></div>
             </div>
             
-            <button id="closeScanBtn" class="bg-slate-800 hover:bg-slate-700 font-bold py-2 rounded-xl text-xs uppercase transition border border-slate-700">
-                Cancel Scan
-            </button>
+            <div class="flex space-x-3 pt-2">
+                <!-- Manual override advancement option (T16) -->
+                <button id="scanManualBtn" class="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-black py-3 rounded-xl text-xs uppercase transition shadow">
+                    ✓ I'm Here
+                </button>
+                <button id="closeScanBtn" class="flex-1 bg-slate-850 hover:bg-slate-800 text-slate-400 font-bold py-3 rounded-xl text-xs uppercase transition border border-slate-800">
+                    Cancel
+                </button>
+            </div>
         </div>
     </dialog>
 

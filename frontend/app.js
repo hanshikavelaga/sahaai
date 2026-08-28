@@ -5,7 +5,23 @@ let socket = null;
 let streamInterval = null;
 let localMediaStream = null;
 let currentSafetyState = "SAFE";
-let scanState = { active: false, step: 0, collectedData: {} };
+let scanState = {
+    active: false,
+    currentStep: "OFF", // "OFF", "LEFT", "CENTER", "RIGHT", "REAR", "COMPILING"
+    subState: "ROTATING", // "ROTATING", "STABILIZING", "CAPTURING"
+    startHeading: null,
+    currentHeading: null,
+    isPaused: false,
+    consecutiveNonCriticalFrames: 0,
+    tempDetections: [],
+    sensorTimeout: null,
+    collectedData: {
+        LEFT: [],
+        CENTER: [],
+        RIGHT: [],
+        REAR: []
+    }
+};
 
 // HTML Elements
 const video = document.getElementById("videoElement");
@@ -52,6 +68,9 @@ const explainStructure = document.getElementById("explainStructure");
 // Dialogs
 const scanDialog = document.getElementById("scanDialog");
 const closeScanBtn = document.getElementById("closeScanBtn");
+const scanManualBtn = document.getElementById("scanManualBtn");
+const scanPauseBanner = document.getElementById("scanPauseBanner");
+const scanInstruction = document.getElementById("scanInstruction");
 const emergencyDialog = document.getElementById("emergencyDialog");
 const closeEmergencyBtn = document.getElementById("closeEmergencyBtn");
 const listenDialog = document.getElementById("listenDialog");
@@ -724,6 +743,34 @@ function handleBackendResponse(data) {
         statusAudio.className = "text-green-500";
     }
 
+    // Accumulate detections for T16 Smart Scan persistence calculations
+    if (scanState.active && scanState.subState === "CAPTURING" && !scanState.isPaused) {
+        const detections = data.all_detections || [];
+        scanState.tempDetections.push(detections);
+    }
+
+    // Critical Alert preemption check for T16 Smart Scan (Hysteresis)
+    if (alert && alert.state === "CRITICAL") {
+        if (scanState.active && !scanState.isPaused) {
+            scanState.isPaused = true;
+            scanState.consecutiveNonCriticalFrames = 0;
+            scanPauseBanner.classList.remove("hidden");
+            addDiagLog("Smart Scan PAUSED due to critical safety threat.");
+        }
+    } else {
+        if (scanState.active && scanState.isPaused) {
+            scanState.consecutiveNonCriticalFrames++;
+            if (scanState.consecutiveNonCriticalFrames >= 4) {
+                scanState.isPaused = false;
+                scanState.consecutiveNonCriticalFrames = 0;
+                scanPauseBanner.classList.add("hidden");
+                addDiagLog("Smart Scan RESUMED. Environment secure.");
+                speak(`Resuming smart scan. Continue rotating to the ${scanState.currentStep.toLowerCase()}.`, 30, true);
+                setStepSensorTimeout();
+            }
+        }
+    }
+
     if (!alert) return;
     
     // Update State Indicator Banner
@@ -770,66 +817,267 @@ function handleVoiceCommand(command) {
 // -------------------------------------------------------------
 // Pillar C: Smart Scan Sequence State Machine
 // -------------------------------------------------------------
+// -------------------------------------------------------------
+// Pillar C: Guided Smart Scan Sequence State Machine (T16)
+// -------------------------------------------------------------
 function triggerSmartScan() {
     if (scanState.active) return;
     
-    speak("Starting smart environment scan. Please hold your camera steady and rotate slowly to your left.", true);
+    speak("Starting smart environment scan. Please turn slowly to your left.", 30, true);
+    addDiagLog("Smart Scan initiated.");
+    
     scanState.active = true;
-    scanState.step = 0;
-    scanState.collectedData = { left: [], center: [], right: [], rear: [] };
+    scanState.currentStep = "LEFT";
+    scanState.subState = "ROTATING";
+    scanState.startHeading = null;
+    scanState.currentHeading = 0;
+    scanState.isPaused = false;
+    scanState.consecutiveNonCriticalFrames = 0;
+    scanState.tempDetections = [];
+    scanState.collectedData = { LEFT: [], CENTER: [], RIGHT: [], REAR: [] };
     
     // Reset visual scan markers
     markLeft.textContent = "○"; markCenter.textContent = "○"; markRight.textContent = "○"; markRear.textContent = "○";
     scanLeft.className = ""; scanCenter.className = ""; scanRight.className = ""; scanRear.className = "";
     
+    scanInstruction.textContent = "Please turn slowly to your LEFT...";
+    scanPauseBanner.classList.add("hidden");
+    
     try { scanDialog.showModal(); } catch (e) {}
+    
+    // Set step sensor timeout
+    setStepSensorTimeout();
+}
 
-    // Timed rotation sequence
-    setTimeout(() => {
-        speak("Capturing left sector. Turn center.");
-        scanLeft.className = "text-green-400 font-bold";
-        markLeft.textContent = "✓";
-        scanState.collectedData.left = ["person left"];
-        scanState.step = 1;
-        
-        setTimeout(() => {
-            speak("Capturing center sector. Turn right.");
-            scanCenter.className = "text-green-400 font-bold";
-            markCenter.textContent = "✓";
-            scanState.collectedData.center = ["clear"];
-            scanState.step = 2;
-            
-            setTimeout(() => {
-                speak("Capturing right sector. Turn around to your back.");
-                scanRight.className = "text-green-400 font-bold";
-                markRight.textContent = "✓";
-                scanState.collectedData.right = ["car right"];
-                scanState.step = 3;
-                
-                setTimeout(() => {
-                    speak("Capturing rear sector. Scan complete. Merging data.", true);
-                    scanRear.className = "text-green-400 font-bold";
-                    markRear.textContent = "✓";
-                    scanState.collectedData.rear = ["static chair"];
-                    scanState.step = 4;
-                    
-                    setTimeout(() => {
-                        try { scanDialog.close(); } catch (e) {}
-                        const summaryMessage = "Scan complete. Your left side is clear. A vehicle is present on your right. One obstacle was detected behind you.";
-                        speak(summaryMessage, true);
-                        addDiagLog("Smart Scan Summary compiled and announced.");
-                        scanState.active = false;
-                    }, 1000);
-                }, 3000);
-            }, 3000);
-        }, 3000);
+function clearSensorTimeout() {
+    if (scanState.sensorTimeout) {
+        clearTimeout(scanState.sensorTimeout);
+        scanState.sensorTimeout = null;
+    }
+}
+
+function setStepSensorTimeout() {
+    clearSensorTimeout();
+    scanState.sensorTimeout = setTimeout(() => {
+        if (scanState.active && scanState.subState === "ROTATING" && !scanState.isPaused) {
+            speak(`I cannot detect rotation. Please turn to your ${scanState.currentStep.toLowerCase()} or tap I'm Here.`, 30);
+        }
     }, 4000);
 }
 
+// Normalize the device orientation into a relative heading (T16.1)
+window.addEventListener("deviceorientation", (event) => {
+    if (!scanState.active || scanState.isPaused || scanState.subState !== "ROTATING") return;
+    
+    let alpha = event.alpha;
+    if (alpha === null || alpha === undefined) return;
+    
+    if (scanState.startHeading === null) {
+        scanState.startHeading = alpha;
+        addDiagLog(`Gyro baseline reference set at ${alpha.toFixed(1)}°`);
+    }
+    
+    // Calculate angular displacement
+    let diff = alpha - scanState.startHeading;
+    while (diff < -180) diff += 360;
+    while (diff > 180) diff -= 360;
+    
+    scanState.currentHeading = diff;
+    evaluateOrientationTarget(diff);
+});
+
+function evaluateOrientationTarget(diff) {
+    if (!scanState.active || scanState.isPaused || scanState.subState !== "ROTATING") return;
+    
+    const step = scanState.currentStep;
+    let targetReached = false;
+    
+    if (step === "LEFT") {
+        if (diff <= -60 && diff >= -120) targetReached = true;
+    } else if (step === "CENTER") {
+        if (diff >= -20 && diff <= 20) targetReached = true;
+    } else if (step === "RIGHT") {
+        if (diff >= 60 && diff <= 120) targetReached = true;
+    } else if (step === "REAR") {
+        if (Math.abs(diff) >= 150) targetReached = true;
+    }
+    
+    if (targetReached) {
+        startStabilizeAndCapture();
+    }
+}
+
+function startStabilizeAndCapture() {
+    clearSensorTimeout();
+    scanState.subState = "STABILIZING";
+    
+    const step = scanState.currentStep;
+    speak(`${step} position reached. Hold camera steady.`, 30, true);
+    scanInstruction.textContent = `${step} position reached. Scanning...`;
+    addDiagLog(`Scan step ${step}: stabilizing...`);
+    
+    scanState.tempDetections = [];
+    
+    // Wait 500ms for camera motion stabilization (T16.6)
+    setTimeout(() => {
+        if (!scanState.active || scanState.isPaused) return;
+        
+        scanState.subState = "CAPTURING";
+        addDiagLog(`Scan step ${step}: capturing...`);
+        
+        // 1500ms capture window (T16.7)
+        setTimeout(() => {
+            if (!scanState.active || scanState.isPaused) return;
+            processStepCaptureResults();
+        }, 1500);
+    }, 500);
+}
+
+function processStepCaptureResults() {
+    const step = scanState.currentStep;
+    const allFrames = scanState.tempDetections;
+    const totalFrames = allFrames.length;
+    
+    // Group occurrences by track_id + object_class (T16.2)
+    const counts = {};
+    const maxRiskMap = {};
+    const maxConfidenceMap = {};
+    const motionMap = {};
+    
+    allFrames.forEach(frame => {
+        frame.forEach(det => {
+            const trackId = det.id !== undefined ? det.id : det.object;
+            const key = `${trackId}_${det.object}`;
+            counts[key] = (counts[key] || 0) + 1;
+            maxRiskMap[key] = Math.max(maxRiskMap[key] || 0, det.risk || 0);
+            maxConfidenceMap[key] = Math.max(maxConfidenceMap[key] || 0, det.confidence || 0);
+            if (det.motion && det.motion.toUpperCase() === "APPROACHING") {
+                motionMap[key] = "approaching";
+            }
+        });
+    });
+    
+    const finalObjects = [];
+    Object.keys(counts).forEach(key => {
+        const parts = key.split("_");
+        const objectClass = parts[1];
+        const count = counts[key];
+        const persistence = count / Math.max(1, totalFrames);
+        const maxRisk = maxRiskMap[key];
+        const maxConfidence = maxConfidenceMap[key];
+        const isApproaching = motionMap[key] === "approaching";
+        
+        // Class-sensitive persistence thresholds
+        let keep = false;
+        if (maxRisk >= 85 || isApproaching) {
+            keep = true; // Retain moving/critical threats
+        } else if (persistence >= 0.50) {
+            keep = true; // Retain static/environmental obstacles
+        }
+        
+        if (keep) {
+            finalObjects.push({
+                class: objectClass,
+                risk: maxRisk,
+                confidence: maxConfidence
+            });
+        }
+    });
+    
+    scanState.collectedData[step] = finalObjects;
+    addDiagLog(`Scan step ${step} complete. Captured: ${JSON.stringify(finalObjects)}`);
+    
+    markStepCompleteUI(step);
+    advanceScanStep();
+}
+
+function markStepCompleteUI(step) {
+    let markElem, scanElem;
+    if (step === "LEFT") {
+        markElem = markLeft; scanElem = scanLeft;
+    } else if (step === "CENTER") {
+        markElem = markCenter; scanElem = scanCenter;
+    } else if (step === "RIGHT") {
+        markElem = markRight; scanElem = scanRight;
+    } else if (step === "REAR") {
+        markElem = markRear; scanElem = scanRear;
+    }
+    if (markElem && scanElem) {
+        markElem.textContent = "✓";
+        scanElem.className = "text-green-400 font-bold";
+    }
+}
+
+function advanceScanStep() {
+    const step = scanState.currentStep;
+    if (step === "LEFT") {
+        scanState.currentStep = "CENTER";
+        scanState.subState = "ROTATING";
+        scanInstruction.textContent = "Rotate slowly back to the CENTER...";
+        speak("Left complete. Return to center.", 30, true);
+        setStepSensorTimeout();
+    } else if (step === "CENTER") {
+        scanState.currentStep = "RIGHT";
+        scanState.subState = "ROTATING";
+        scanInstruction.textContent = "Rotate slowly to the RIGHT...";
+        speak("Center complete. Rotate right.", 30, true);
+        setStepSensorTimeout();
+    } else if (step === "RIGHT") {
+        scanState.currentStep = "REAR";
+        scanState.subState = "ROTATING";
+        scanInstruction.textContent = "Turn around slowly to check the REAR...";
+        speak("Right complete. Turn around slowly.", 30, true);
+        setStepSensorTimeout();
+    } else if (step === "REAR") {
+        scanState.currentStep = "COMPILING";
+        compileScanSummary();
+    }
+}
+
+function compileScanSummary() {
+    scanInstruction.textContent = "Compiling environmental scan results...";
+    speak("Scan complete. Summarizing findings.", 30, true);
+    
+    // Group collected data into a friendly summary sentence (T17 preview)
+    const summaryParts = [];
+    const zones = ["LEFT", "CENTER", "RIGHT", "REAR"];
+    
+    zones.forEach(zone => {
+        const items = scanState.collectedData[zone];
+        if (items.length === 0) {
+            summaryParts.push(`${zone.toLowerCase()} side is clear`);
+        } else {
+            const desc = items.map(it => it.class).join(" and ");
+            summaryParts.push(`${zone.toLowerCase()}: ${desc} detected`);
+        }
+    });
+    
+    const summaryText = "Smart environmental scan complete. " + summaryParts.join(". ") + ".";
+    
+    setTimeout(() => {
+        try { scanDialog.close(); } catch (e) {}
+        speak(summaryText, 60, true);
+        addDiagLog(`Smart Scan Complete: "${summaryText}"`);
+        scanState.active = false;
+        scanState.currentStep = "OFF";
+    }, 1200);
+}
+
+// Event Listeners for Smart Scan Controls
+scanBtn.addEventListener("click", triggerSmartScan);
+scanManualBtn.addEventListener("click", () => {
+    if (!scanState.active || scanState.isPaused || scanState.subState !== "ROTATING") return;
+    addDiagLog(`Manual check-in triggered for step: ${scanState.currentStep}`);
+    startStabilizeAndCapture();
+});
+
 closeScanBtn.addEventListener("click", () => {
+    clearSensorTimeout();
     try { scanDialog.close(); } catch (e) {}
     scanState.active = false;
+    scanState.currentStep = "OFF";
     speak("Scan cancelled.", true);
+    addDiagLog("Smart Scan cancelled.");
 });
 
 // -------------------------------------------------------------

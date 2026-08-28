@@ -353,4 +353,104 @@ def test_scenario_l_state_escalation_alert_to_critical():
     assert fused_res["state"] == "CRITICAL"
     assert "Critical" in fused_res["message"]
 
+def test_scenario_m_smart_scan_critical_preemption():
+    """
+    Scenario M: A critical safety warning must always preempt Smart Scan.
+    Verify that the Attention Engine prioritizes a critical Approaching Car (risk 95)
+    over a static scan candidate (risk 40).
+    """
+    scan_hazard = {
+        "id": 1,
+        "object": "chair",
+        "confidence": 0.85,
+        "direction": "left",
+        "proximity": "near",
+        "motion": "static",
+        "risk": 40,
+        "state": "CAUTION",
+        "message": "Caution. Obstacle on your left."
+    }
+    
+    critical_hazard = {
+        "id": 2,
+        "object": "car",
+        "confidence": 0.95,
+        "direction": "right",
+        "proximity": "near",
+        "motion": "approaching",
+        "risk": 95,
+        "state": "CRITICAL",
+        "message": "Critical. car approaching on your right!"
+    }
+    
+    # Priority check
+    result = prioritize_alerts([scan_hazard, critical_hazard])
+    
+    # The critical hazard must be selected
+    assert result["object"] == "car"
+    assert result["state"] == "CRITICAL"
+    assert "Critical" in result["message"]
+
+def test_scenario_n_scan_persistence_filtering():
+    """
+    Scenario N: Persistence filtering logic (python simulation).
+    Static objects require >= 50% persistence, moving critical threats are retained.
+    """
+    # 5 captured frames
+    frame_1 = [
+        {"id": 10, "object": "car", "risk": 45, "motion": "static", "confidence": 0.80},
+        {"id": 12, "object": "dog", "risk": 30, "motion": "static", "confidence": 0.70}
+    ]
+    frame_2 = [
+        {"id": 10, "object": "car", "risk": 45, "motion": "static", "confidence": 0.80},
+        {"id": 15, "object": "car", "risk": 88, "motion": "approaching", "confidence": 0.90} # critical motorcycle
+    ]
+    frame_3 = [
+        {"id": 10, "object": "car", "risk": 45, "motion": "static", "confidence": 0.85}
+    ]
+    frame_4 = [
+        {"id": 10, "object": "car", "risk": 45, "motion": "static", "confidence": 0.85}
+    ]
+    frame_5 = []
+    
+    all_frames = [frame_1, frame_2, frame_3, frame_4, frame_5]
+    total_frames = len(all_frames)
+    
+    # Run persistence logic
+    counts = {}
+    max_risk = {}
+    motion_states = {}
+    
+    for frame in all_frames:
+        for det in frame:
+            key = f"{det['id']}_{det['object']}"
+            counts[key] = counts.get(key, 0) + 1
+            max_risk[key] = max(max_risk[key] if key in max_risk else 0, det["risk"])
+            if det["motion"] == "approaching":
+                motion_states[key] = "approaching"
+                
+    final_retained = []
+    for key, count in counts.items():
+        persistence = count / total_frames
+        risk = max_risk[key]
+        is_approaching = motion_states.get(key) == "approaching"
+        
+        # Filter
+        keep = False
+        if risk >= 85 or is_approaching:
+            keep = True # Retain moving threat
+        elif persistence >= 0.50:
+            keep = True # Retain static obstacle
+            
+        if keep:
+            final_retained.append(key)
+            
+    # Track 10 (car) had 4/5 = 80% persistence -> Retained
+    # Track 15 (car approaching) had 1/5 = 20% persistence but is critical -> Retained
+    # Track 12 (dog) had 1/5 = 20% persistence -> Discarded
+    assert "10_car" in final_retained
+    assert "15_car" in final_retained
+    assert "12_dog" not in final_retained
+
+
 
