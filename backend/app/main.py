@@ -182,6 +182,7 @@ async def websocket_stream(websocket: WebSocket):
                         # Process each tracked object through Hazard Priority Engine
                         for obj in tracked_objects:
                             hazard_info = calculate_hazard_priority(obj)
+                            hazard_info["bbox"] = obj.get("bbox") # Preserve bounding box for client rendering
                             frame_detections.append(hazard_info)
                 except Exception as e:
                     logger.error(f"Frame processing error: {e}")
