@@ -179,7 +179,7 @@ async function startWebcam() {
         addDiagLog("Webcam access granted. Stream rendered at 30 FPS.");
     } catch (err) {
         addDiagLog(`Webcam error: ${err.message}. Running visual-free audio simulation.`);
-        placeholder.textContent = "Webcam Unavailable";
+        placeholder.textContent = `Webcam Unavailable: ${err.name} (${err.message})`;
     }
 }
 
