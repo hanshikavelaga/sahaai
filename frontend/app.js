@@ -12,11 +12,31 @@ const video = document.getElementById("videoElement");
 const canvas = document.getElementById("overlayCanvas");
 const ctx = canvas.getContext("2d");
 const placeholder = document.getElementById("videoPlaceholder");
-const safetyBanner = document.getElementById("safetyBanner");
+const placeholderText = document.getElementById("videoPlaceholderText");
+
+// Header status elements
+const headerStatusDot = document.getElementById("headerStatusDot");
+const headerStatusText = document.getElementById("headerStatusText");
+
+// Hazard Card elements
+const hazardCard = document.getElementById("hazardCard");
 const safetyStateText = document.getElementById("safetyStateText");
+const hazardName = document.getElementById("hazardName");
+const hazardRisk = document.getElementById("hazardRisk");
+const hazardDirection = document.getElementById("hazardDirection");
+const hazardProximity = document.getElementById("hazardProximity");
+const hazardMotion = document.getElementById("hazardMotion");
 const subtitleText = document.getElementById("subtitleText");
 
-// Buttons
+// Footer indicators
+const statusVision = document.getElementById("statusVision");
+const statusAudio = document.getElementById("statusAudio");
+const statusAI = document.getElementById("statusAI");
+const statusDB = document.getElementById("statusDB");
+const audioStateText = document.getElementById("audioStateText");
+const audioStateIndicator = document.getElementById("audioStateIndicator");
+
+// Interactive controls
 const toggleSafetyBtn = document.getElementById("toggleSafetyBtn");
 const modeToggleBtn = document.getElementById("modeToggleBtn");
 const askBtn = document.getElementById("askBtn");
@@ -25,39 +45,59 @@ const ocrBtn = document.getElementById("ocrBtn");
 const helpBtn = document.getElementById("helpBtn");
 const diagToggleBtn = document.getElementById("diagToggleBtn");
 const diagDrawer = document.getElementById("diagDrawer");
+const diagChevron = document.getElementById("diagChevron");
 const diagLogsList = document.getElementById("diagLogsList");
+const explainStructure = document.getElementById("explainStructure");
 
 // Dialogs
+const scanDialog = document.getElementById("scanDialog");
+const closeScanBtn = document.getElementById("closeScanBtn");
 const emergencyDialog = document.getElementById("emergencyDialog");
 const closeEmergencyBtn = document.getElementById("closeEmergencyBtn");
+const listenDialog = document.getElementById("listenDialog");
+
+// Scan progress components
+const scanLeft = document.getElementById("scanLeft");
+const scanCenter = document.getElementById("scanCenter");
+const scanRight = document.getElementById("scanRight");
+const scanRear = document.getElementById("scanRear");
+const markLeft = document.getElementById("markLeft");
+const markCenter = document.getElementById("markCenter");
+const markRight = document.getElementById("markRight");
+const markRear = document.getElementById("markRear");
 
 // Speech Engine Instances
 const SpeechSynthesis = window.speechSynthesis;
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
 let recognition = null;
 
-// Initialize continuous wake-phrase recognition if supported
+// Initialize continuous speech commands recognition
 if (SpeechRecognition) {
     recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = false;
     recognition.lang = "en-US";
     
+    recognition.onstart = () => {
+        if (!isSafetyActive) {
+            try { listenDialog.showModal(); } catch (e) {}
+        }
+    };
+    
     recognition.onresult = (event) => {
         const text = event.results[0][0].transcript.toLowerCase().trim();
-        addDiagLog(`STT Recognized command: "${text}"`);
+        addDiagLog(`STT Recognized: "${text}"`);
         handleVoiceCommand(text);
+        try { listenDialog.close(); } catch (e) {}
     };
 
     recognition.onerror = (err) => {
-        logger("Speech recognition error: " + err.error);
+        addDiagLog("Speech recognition error: " + err.error);
+        try { listenDialog.close(); } catch (e) {}
     };
     
     recognition.onend = () => {
-        // Automatically restart speech command listener if safety is active
-        if (isSafetyActive) {
-            addDiagLog("Speech recognition standby...");
-        }
+        try { listenDialog.close(); } catch (e) {}
     };
 }
 
@@ -70,22 +110,21 @@ function speak(message, interrupt = false) {
     subtitleText.textContent = `"${message}"`;
     
     if (!SpeechSynthesis) {
-        addDiagLog(`TTS fallback print: "${message}"`);
+        addDiagLog(`TTS print fallback: "${message}"`);
         return;
     }
     
-    // Interrupt current speaking if requested (critical alerts override everything)
     if (interrupt) {
         SpeechSynthesis.cancel();
     }
     
     const utterance = new SpeechSynthesisUtterance(message);
-    utterance.rate = 1.05; // Slightly faster speech for quick reaction
+    utterance.rate = 1.05;
     SpeechSynthesis.speak(utterance);
 }
 
 // -------------------------------------------------------------
-// Diagnostics Drawer Log Helper
+// Diagnostics Drawer Log Helpers
 // -------------------------------------------------------------
 function addDiagLog(message) {
     const timestamp = new Date().toLocaleTimeString();
@@ -96,50 +135,86 @@ function addDiagLog(message) {
 }
 
 // -------------------------------------------------------------
-// Emergency SOS Modal
-// -------------------------------------------------------------
-function triggerEmergencySOS() {
-    speak("Emergency activated. Displaying SOS and mock location.", true);
-    emergencyDialog.showModal();
-    updateSafetyState("CRITICAL");
-    addDiagLog("EMERGENCY Mode activated. Preconfigured contacts notified.");
-}
-
-closeEmergencyBtn.addEventListener("click", () => {
-    emergencyDialog.close();
-    updateSafetyState("SAFE");
-    speak("Emergency mode cancelled.", true);
-    addDiagLog("EMERGENCY Mode cancelled.");
-});
-
-// -------------------------------------------------------------
-// UI State Updates (Safety Levels)
+// UI State Updates (Safety Levels & Indicators)
 // -------------------------------------------------------------
 function updateSafetyState(state) {
     currentSafetyState = state;
     safetyStateText.textContent = state;
     
-    // Reset classes
-    safetyBanner.className = "p-6 rounded-2xl flex flex-col items-center justify-center text-center shadow-md transition-all duration-300 ";
+    // Reset hazard card styling classes
+    hazardCard.className = "bg-slate-900 border p-5 rounded-2xl flex flex-col space-y-3 shadow-lg transition-all duration-300 ";
+    safetyStateText.className = "text-xs font-black uppercase tracking-wider px-3 py-0.5 rounded-full bg-slate-950 border ";
     
     switch(state) {
         case "SAFE":
-            safetyBanner.classList.add("state-safe");
+            hazardCard.classList.add("border-slate-800");
+            safetyStateText.classList.add("border-green-800", "text-green-400");
             break;
         case "CAUTION":
-            safetyBanner.classList.add("state-caution");
+            hazardCard.classList.add("border-yellow-700/60");
+            safetyStateText.classList.add("border-yellow-600", "text-yellow-400");
             break;
         case "ALERT":
-            safetyBanner.classList.add("state-alert");
+            hazardCard.classList.add("border-orange-700/60");
+            safetyStateText.classList.add("border-orange-500", "text-orange-400");
             break;
         case "CRITICAL":
-            safetyBanner.classList.add("state-critical");
+            hazardCard.classList.add("border-red-600", "animate-pulse");
+            safetyStateText.classList.add("border-red-600", "text-red-500");
             break;
     }
 }
 
+function updateExplainability(alert) {
+    if (!alert) return;
+    
+    if (alert.state === "SAFE") {
+        explainStructure.innerHTML = `
+            <div class="text-slate-500">No active threats. System status is SAFE.</div>
+        `;
+        return;
+    }
+
+    const checks = alert.reason.map(r => `<div>✓ ${r}</div>`).join("");
+    
+    explainStructure.innerHTML = `
+        <div class="grid grid-cols-2 gap-y-1 gap-x-4 border-b border-slate-800 pb-2 mb-2 text-slate-300">
+            <div>Confidence:</div><div class="text-right text-slate-100 font-bold">${Math.round((alert.confidence || 0.9) * 100)}%</div>
+            <div>Direction:</div><div class="text-right text-slate-100 font-bold uppercase">${alert.direction}</div>
+            <div>Proximity:</div><div class="text-right text-slate-100 font-bold uppercase">${alert.proximity}</div>
+            <div>Motion:</div><div class="text-right text-slate-100 font-bold uppercase">${alert.motion}</div>
+            <div>Risk Score:</div><div class="text-right text-slate-100 font-bold">${alert.risk}/100</div>
+            <div>TTI:</div><div class="text-right text-slate-100 font-bold">${alert.tti} frames</div>
+        </div>
+        <div>
+            <span class="text-[9px] uppercase font-bold text-slate-500 block mb-1">Audit Criteria Matches:</span>
+            <div class="text-red-400 space-y-0.5">${checks}</div>
+        </div>
+    `;
+}
+
+function updateFooterStatus(live) {
+    if (live) {
+        statusVision.className = "text-green-500";
+        statusAudio.className = "text-green-500";
+        statusAI.className = "text-green-500";
+        statusDB.className = "text-green-500";
+        headerStatusDot.className = "w-2.5 h-2.5 rounded-full bg-green-500";
+        headerStatusText.className = "text-[10px] font-black uppercase tracking-wider text-green-400";
+        headerStatusText.textContent = "SAFETY ACTIVE";
+    } else {
+        statusVision.className = "text-slate-600";
+        statusAudio.className = "text-slate-600";
+        statusAI.className = "text-slate-600";
+        statusDB.className = "text-slate-600";
+        headerStatusDot.className = "w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse";
+        headerStatusText.className = "text-[10px] font-black uppercase tracking-wider text-slate-400";
+        headerStatusText.textContent = "STANDBY";
+    }
+}
+
 // -------------------------------------------------------------
-// Media Stream & Drawing Utilities
+// Media Stream & Bounding Box Utilities
 // -------------------------------------------------------------
 async function startWebcam() {
     try {
@@ -174,12 +249,16 @@ async function startWebcam() {
                 video: true
             });
         }
+
         video.srcObject = localMediaStream;
+        video.classList.remove("hidden");
         placeholder.classList.add("hidden");
         addDiagLog("Webcam access granted. Stream rendered at 30 FPS.");
     } catch (err) {
-        addDiagLog(`Webcam error: ${err.message}. Running visual-free audio simulation.`);
-        placeholder.textContent = `Webcam Unavailable: ${err.name} (${err.message})`;
+        addDiagLog(`Webcam error: ${err.message}.`);
+        video.classList.add("hidden");
+        placeholder.classList.remove("hidden");
+        placeholderText.innerHTML = `Webcam Access Blocked<br><span class="text-xs text-red-500 font-semibold">(${err.name}: ${err.message})</span><br><br>Please check browser camera permissions!`;
     }
 }
 
@@ -189,17 +268,19 @@ function stopWebcam() {
         localMediaStream = null;
         video.srcObject = null;
     }
+    video.classList.add("hidden");
     placeholder.classList.remove("hidden");
-    placeholder.textContent = "Camera Paused";
+    placeholderText.innerHTML = "CAMERA OFF<br>Tap START SAFETY MODE";
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 function drawBoundingBoxes(detections) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    if (!detections) return;
+    // Do not draw if webcam is stopped
+    if (!localMediaStream && isLiveMode) return;
+    if (!detections || detections.length === 0) return;
     
-    // Auto-adjust overlay canvas resolution to match video
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
 
@@ -210,13 +291,13 @@ function drawBoundingBoxes(detections) {
                       det.state === "CAUTION" ? "#eab308" : "#22c55e";
                       
         ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 4;
         ctx.strokeRect(xmin, ymin, xmax - xmin, ymax - ymin);
         
         ctx.fillStyle = color;
-        ctx.font = "bold 14px sans-serif";
+        ctx.font = "bold 16px sans-serif";
         const label = `${det.object.toUpperCase()} (${Math.round(det.confidence*100)}%) - ${det.motion}`;
-        ctx.fillText(label, xmin, ymin > 20 ? ymin - 8 : ymin + 18);
+        ctx.fillText(label, xmin, ymin > 25 ? ymin - 10 : ymin + 20);
     });
 }
 
@@ -230,7 +311,7 @@ function initWebSocket() {
     
     socket.onopen = () => {
         addDiagLog("WebSocket connection established with FastAPI.");
-        // Ingestion Loop running at 3 FPS to avoid choke
+        updateFooterStatus(true);
         streamInterval = setInterval(sendFrameToBackend, 330);
     };
     
@@ -242,11 +323,12 @@ function initWebSocket() {
     };
     
     socket.onerror = (err) => {
-        addDiagLog("WebSocket network error occurred.");
+        addDiagLog("WebSocket error occurred.");
     };
     
     socket.onclose = () => {
         addDiagLog("WebSocket connection closed.");
+        updateFooterStatus(false);
         clearInterval(streamInterval);
     };
 }
@@ -254,15 +336,14 @@ function initWebSocket() {
 function sendFrameToBackend() {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     
-    // Draw current frame to offscreen canvas to convert to base64 jpeg
     const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = 320; // Downscale frame slightly for fast network transfers
+    tempCanvas.width = 320;
     tempCanvas.height = 240;
     const tempCtx = tempCanvas.getContext("2d");
     
     if (localMediaStream && video.readyState === video.HAVE_ENOUGH_DATA) {
         tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-        const base64Image = tempCanvas.toDataURL("image/jpeg", 0.6); // 60% quality compression
+        const base64Image = tempCanvas.toDataURL("image/jpeg", 0.6);
         
         socket.send(JSON.stringify({
             image: base64Image,
@@ -275,24 +356,40 @@ function handleBackendResponse(data) {
     const alert = data.active_alert;
     const allDetections = data.all_detections;
     
-    // 1. Update overlay boxes
+    // Draw overlays
     drawBoundingBoxes(allDetections);
     
+    // Handle Audio status feedback
+    if (data.audio_hazard) {
+        audioStateText.textContent = "HORN DETECTED!";
+        audioStateText.className = "text-red-500 font-extrabold animate-pulse";
+        statusAudio.className = "text-red-500";
+    } else {
+        audioStateText.textContent = "LISTENING";
+        audioStateText.className = "text-slate-400 font-bold";
+        statusAudio.className = "text-green-500";
+    }
+
     if (!alert) return;
     
-    // 2. Update Safety State Banner
+    // Update State Indicator Banner
     updateSafetyState(alert.state);
     
-    // 3. Spoken alert triggers
+    // Update Active Hazard Card values
+    hazardName.textContent = alert.object === "clear" ? "CLEAR" : alert.object.toUpperCase();
+    hazardRisk.textContent = alert.risk;
+    hazardDirection.textContent = alert.direction.toUpperCase();
+    hazardProximity.textContent = alert.proximity.toUpperCase();
+    hazardMotion.textContent = alert.motion.toUpperCase();
+    
+    // Update Explainability fields
+    updateExplainability(alert);
+    
+    // Spoken alerts
     if (alert.message) {
         const isCritical = alert.state === "CRITICAL";
         speak(alert.message, isCritical);
         addDiagLog(`ANNOUNCEMENT: "${alert.message}" (${alert.state})`);
-    }
-    
-    // 4. Update Explainability trail if alert is active
-    if (alert.state !== "SAFE") {
-        addDiagLog(`EXPLAIN: Target=${alert.object.toUpperCase()} | Risk=${alert.risk} | Motion=${alert.motion} | Reason=[${alert.reason.join(", ")}]`);
     }
 }
 
@@ -305,19 +402,18 @@ function handleVoiceCommand(command) {
     if (command.includes("what is ahead") || command.includes("describe")) {
         speak("Analyzing what is ahead of you.", true);
         if (socket && socket.readyState === WebSocket.OPEN) {
-            // Trigger an on-demand frame request
             sendFrameToBackend();
         }
-    } else if (command.includes("scan around me") || command.includes("start scan")) {
+    } else if (command.includes("scan around") || command.includes("start scan")) {
         triggerSmartScan();
-    } else if (command.includes("read this") || command.includes("read sign") || command.includes("ocr")) {
+    } else if (command.includes("read text") || command.includes("read sign") || command.includes("ocr")) {
         triggerOCR();
     } else if (command.includes("help") || command.includes("emergency")) {
         triggerEmergencySOS();
     } else if (command.includes("start safety") || command.includes("activate mode")) {
         if (!isSafetyActive) toggleSafetyMode();
     } else {
-        speak("Command not recognized. Please try again.");
+        speak("Command not recognized.");
     }
 }
 
@@ -332,38 +428,59 @@ function triggerSmartScan() {
     scanState.step = 0;
     scanState.collectedData = { left: [], center: [], right: [], rear: [] };
     
-    // We run a robust timing-based scan sequence (3 seconds per direction)
-    // To simulate physical turning angles.
+    // Reset visual scan markers
+    markLeft.textContent = "○"; markCenter.textContent = "○"; markRight.textContent = "○"; markRear.textContent = "○";
+    scanLeft.className = ""; scanCenter.className = ""; scanRight.className = ""; scanRear.className = "";
+    
+    try { scanDialog.showModal(); } catch (e) {}
+
+    // Timed rotation sequence
     setTimeout(() => {
         speak("Capturing left sector. Turn center.");
-        scanState.collectedData.left = ["person far left"];
+        scanLeft.className = "text-green-400 font-bold";
+        markLeft.textContent = "✓";
+        scanState.collectedData.left = ["person left"];
         scanState.step = 1;
         
         setTimeout(() => {
             speak("Capturing center sector. Turn right.");
+            scanCenter.className = "text-green-400 font-bold";
+            markCenter.textContent = "✓";
             scanState.collectedData.center = ["clear"];
             scanState.step = 2;
             
             setTimeout(() => {
                 speak("Capturing right sector. Turn around to your back.");
+                scanRight.className = "text-green-400 font-bold";
+                markRight.textContent = "✓";
                 scanState.collectedData.right = ["car right"];
                 scanState.step = 3;
                 
                 setTimeout(() => {
                     speak("Capturing rear sector. Scan complete. Merging data.", true);
+                    scanRear.className = "text-green-400 font-bold";
+                    markRear.textContent = "✓";
                     scanState.collectedData.rear = ["static chair"];
                     scanState.step = 4;
                     
-                    // Summarize output
-                    const summaryMessage = "Scan complete. Your left side is clear. A vehicle is present on your right. One obstacle was detected behind you.";
-                    speak(summaryMessage, true);
-                    addDiagLog("Smart Scan Summary compiled and announced.");
-                    scanState.active = false;
+                    setTimeout(() => {
+                        try { scanDialog.close(); } catch (e) {}
+                        const summaryMessage = "Scan complete. Your left side is clear. A vehicle is present on your right. One obstacle was detected behind you.";
+                        speak(summaryMessage, true);
+                        addDiagLog("Smart Scan Summary compiled and announced.");
+                        scanState.active = false;
+                    }, 1000);
                 }, 3000);
             }, 3000);
         }, 3000);
     }, 4000);
 }
+
+closeScanBtn.addEventListener("click", () => {
+    try { scanDialog.close(); } catch (e) {}
+    scanState.active = false;
+    speak("Scan cancelled.", true);
+});
 
 // -------------------------------------------------------------
 // Phase 2: OCR Utility Trigger
@@ -388,10 +505,10 @@ async function triggerOCR() {
             });
             const data = await res.json();
             speak(`Read text: ${data.text}`, true);
-            addDiagLog(`OCR Detected text: "${data.text}" (Confidence: ${Math.round(data.confidence*100)}%)`);
+            addDiagLog(`OCR Detected: "${data.text}" (${Math.round(data.confidence*100)}%)`);
         } catch (err) {
             speak("Failed to process image text.");
-            addDiagLog(`OCR API error: ${err.message}`);
+            addDiagLog(`OCR error: ${err.message}`);
         }
     } else {
         speak("Camera stream unavailable for text capture.");
@@ -399,14 +516,31 @@ async function triggerOCR() {
 }
 
 // -------------------------------------------------------------
+// Emergency SOS Modal
+// -------------------------------------------------------------
+function triggerEmergencySOS() {
+    speak("Emergency activated. Displaying SOS and mock location.", true);
+    try { emergencyDialog.showModal(); } catch (e) {}
+    updateSafetyState("CRITICAL");
+    addDiagLog("EMERGENCY SOS triggered.");
+}
+
+closeEmergencyBtn.addEventListener("click", () => {
+    try { emergencyDialog.close(); } catch (e) {}
+    updateSafetyState("SAFE");
+    speak("Emergency mode cancelled.", true);
+    addDiagLog("EMERGENCY SOS cancelled.");
+});
+
+// -------------------------------------------------------------
 // Hackathon Safety Net: Demo Mode Playback
 // -------------------------------------------------------------
 const DEMO_DATASET = [
-    { state: "SAFE", all_detections: [], active_alert: { state: "SAFE", message: "Safety loop active.", reason: ["initial status"] } },
-    { state: "CAUTION", all_detections: [{ bbox: [250, 100, 390, 400], object: "person", confidence: 0.88, motion: "STATIC", state: "CAUTION" }], active_alert: { state: "CAUTION", object: "person", message: "Person ahead.", risk: 35, motion: "STATIC", reason: ["medium proximity"] } },
-    { state: "ALERT", all_detections: [{ bbox: [200, 200, 450, 470], object: "chair", confidence: 0.72, motion: "STATIC", state: "ALERT" }], active_alert: { state: "ALERT", object: "chair", message: "Caution. Obstacle ahead.", risk: 65, motion: "STATIC", reason: ["near proximity", "directly in path"] } },
-    { state: "CRITICAL", all_detections: [{ bbox: [400, 150, 620, 450], object: "car", confidence: 0.94, motion: "APPROACHING", state: "CRITICAL" }], active_alert: { state: "CRITICAL", object: "car", message: "Warning! Car approaching on your right!", risk: 94, motion: "APPROACHING", reason: ["high severity car", "near proximity", "approaching motion"] } },
-    { state: "ALERT", all_detections: [], active_alert: { state: "ALERT", object: "sound_pattern", message: "Possible vehicle sound detected nearby.", risk: 75, motion: "approaching", reason: ["siren pattern frequency FFT peaks detected"] } }
+    { state: "SAFE", all_detections: [], active_alert: { state: "SAFE", object: "clear", message: "Safety loop active.", risk: 0, direction: "none", proximity: "none", motion: "static", tti: "infinite", reason: ["system test"] } },
+    { state: "CAUTION", all_detections: [{ bbox: [250, 100, 390, 400], object: "person", confidence: 0.88, motion: "STATIC", state: "CAUTION" }], active_alert: { state: "CAUTION", object: "person", confidence: 0.88, message: "Person ahead.", risk: 36, direction: "center", proximity: "medium", motion: "static", tti: "infinite", reason: ["person detected", "medium proximity", "center path"] } },
+    { state: "ALERT", all_detections: [{ bbox: [200, 200, 450, 470], object: "chair", confidence: 0.72, motion: "STATIC", state: "ALERT" }], active_alert: { state: "ALERT", object: "chair", confidence: 0.72, message: "Caution. Obstacle ahead.", risk: 72, direction: "center", proximity: "near", motion: "static", tti: "infinite", reason: ["chair detected", "near proximity", "directly in path"] } },
+    { state: "CRITICAL", all_detections: [{ bbox: [400, 150, 620, 450], object: "car", confidence: 0.94, motion: "APPROACHING", state: "CRITICAL" }], active_alert: { state: "CRITICAL", object: "car", confidence: 0.94, message: "Warning! Car approaching on your right!", risk: 94, direction: "right", proximity: "near", motion: "approaching", tti: "3.2", reason: ["vehicle severity", "near proximity", "approaching motion", "fast approach rate"] } },
+    { state: "ALERT", all_detections: [], active_alert: { state: "ALERT", object: "sound_pattern", confidence: 0.75, message: "Possible vehicle sound detected nearby.", risk: 75, direction: "around", proximity: "near", motion: "approaching", tti: "infinite", reason: ["siren periodic frequency FFT peaks detected"] } }
 ];
 
 let demoTimer = null;
@@ -414,7 +548,7 @@ let demoIndex = 0;
 
 function runDemoModeStep() {
     if (demoIndex >= DEMO_DATASET.length) {
-        demoIndex = 0; // Loop demo
+        demoIndex = 0;
     }
     
     const step = DEMO_DATASET[demoIndex];
@@ -435,12 +569,31 @@ function runDemoModeStep() {
         ctx.fillText(`${det.object.toUpperCase()} (${det.motion})`, xmin, ymin - 10);
     });
     
-    // Spoken alerts
-    if (step.active_alert && step.active_alert.message) {
+    // Update card values
+    const alert = step.active_alert;
+    hazardName.textContent = alert.object.toUpperCase();
+    hazardRisk.textContent = alert.risk;
+    hazardDirection.textContent = alert.direction.toUpperCase();
+    hazardProximity.textContent = alert.proximity.toUpperCase();
+    hazardMotion.textContent = alert.motion.toUpperCase();
+    
+    updateExplainability(alert);
+    
+    // Simulate Audio footers
+    if (alert.object === "sound_pattern") {
+        audioStateText.textContent = "SIREN DETECTED!";
+        audioStateText.className = "text-red-500 font-extrabold animate-pulse";
+        statusAudio.className = "text-red-500";
+    } else {
+        audioStateText.textContent = "LISTENING";
+        audioStateText.className = "text-slate-400 font-bold";
+        statusAudio.className = "text-green-500";
+    }
+
+    if (alert.message) {
         const isCritical = step.state === "CRITICAL";
-        speak(step.active_alert.message, isCritical);
-        addDiagLog(`DEMO ANNOUNCEMENT: "${step.active_alert.message}" (${step.state})`);
-        addDiagLog(`DEMO EXPLAIN: Target=${step.active_alert.object} | Risk=${step.active_alert.risk} | Reason=[${step.active_alert.reason.join(", ")}]`);
+        speak(alert.message, isCritical);
+        addDiagLog(`DEMO ALERT: "${alert.message}" (${step.state})`);
     }
     
     demoIndex++;
@@ -454,17 +607,18 @@ function toggleSafetyMode() {
     
     if (isSafetyActive) {
         toggleSafetyBtn.textContent = "PAUSE SAFETY MODE";
-        toggleSafetyBtn.className = "col-span-2 bg-yellow-600 hover:bg-yellow-500 font-bold p-4 rounded-xl text-lg transition shadow-md";
+        toggleSafetyBtn.className = "w-full bg-yellow-600 hover:bg-yellow-500 font-black p-4 rounded-xl text-lg tracking-wider transition shadow-lg border-b-4 border-yellow-800 active:border-b-0 active:mt-1 active:mb-[-1px]";
         speak("Safety active.", true);
         addDiagLog("Safety companion activated.");
         
         if (isLiveMode) {
             startWebcam().then(initWebSocket);
         } else {
-            addDiagLog("Running pre-recorded walk scenario.");
+            addDiagLog("Running Demo walk scenario playback.");
+            updateFooterStatus(true);
             demoIndex = 0;
             runDemoModeStep();
-            demoTimer = setInterval(runDemoModeStep, 6000); // Progress scenario step every 6 seconds
+            demoTimer = setInterval(runDemoModeStep, 6000);
         }
         
         if (recognition) {
@@ -472,7 +626,7 @@ function toggleSafetyMode() {
         }
     } else {
         toggleSafetyBtn.textContent = "START SAFETY MODE";
-        toggleSafetyBtn.className = "col-span-2 bg-blue-600 hover:bg-blue-500 font-bold p-4 rounded-xl text-lg transition shadow-md";
+        toggleSafetyBtn.className = "w-full bg-blue-600 hover:bg-blue-500 font-black p-4 rounded-xl text-lg tracking-wider transition shadow-lg border-b-4 border-blue-800 active:border-b-0 active:mt-1 active:mb-[-1px]";
         speak("Safety paused.", true);
         addDiagLog("Safety companion paused.");
         
@@ -492,6 +646,15 @@ function toggleSafetyMode() {
             try { recognition.stop(); } catch(e) {}
         }
         updateSafetyState("SAFE");
+        updateFooterStatus(false);
+        
+        // Reset card fields
+        hazardName.textContent = "CLEAR";
+        hazardRisk.textContent = "0";
+        hazardDirection.textContent = "NONE";
+        hazardProximity.textContent = "NONE";
+        hazardMotion.textContent = "STATIC";
+        explainStructure.innerHTML = `<div class="text-slate-500">Select "Start Safety Mode" to log logical audits.</div>`;
     }
 }
 
@@ -503,29 +666,28 @@ toggleSafetyBtn.addEventListener("click", toggleSafetyMode);
 modeToggleBtn.addEventListener("click", () => {
     isLiveMode = !isLiveMode;
     
-    // Stop current runs before switching
     if (isSafetyActive) {
         toggleSafetyMode();
     }
     
     if (isLiveMode) {
         modeToggleBtn.textContent = "LIVE MODE";
-        modeToggleBtn.className = "bg-slate-800 border border-slate-700 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-lg font-bold transition-all";
-        addDiagLog("Switched input source to LIVE WEBCAM.");
+        modeToggleBtn.className = "bg-blue-900/40 border border-blue-700/60 hover:bg-blue-900/60 text-[10px] px-2.5 py-1 rounded-lg font-black tracking-wide text-blue-300 uppercase transition-all";
+        addDiagLog("Switched input source to LIVE CAMERA.");
+        statusAI.textContent = "●";
     } else {
         modeToggleBtn.textContent = "DEMO MODE";
-        modeToggleBtn.className = "bg-blue-900 border border-blue-700 hover:bg-blue-800 text-xs px-3 py-1.5 rounded-lg font-bold transition-all text-blue-200 animate-pulse";
-        addDiagLog("Switched input source to PRE-RECORDED SCENARIO FEED.");
+        modeToggleBtn.className = "bg-blue-600 border border-blue-500 hover:bg-blue-700 text-[10px] px-2.5 py-1 rounded-lg font-black tracking-wide text-white uppercase transition-all animate-pulse";
+        addDiagLog("Switched input source to DEMO SCENARIO LOGS.");
     }
 });
 
 askBtn.addEventListener("click", () => {
     speak("Listening. Say a command.", true);
     if (recognition) {
-        try { recognition.start(); } catch(e) { addDiagLog("STT recognizer already active."); }
+        try { recognition.start(); } catch(e) {}
     } else {
-        // Fallback prompt for browsers that don't support Web SpeechRecognition (like Firefox/Safari)
-        const typedCmd = prompt("Enter voice command (e.g. 'what is ahead', 'scan around me', 'help me', 'read sign'):");
+        const typedCmd = prompt("Enter voice command (e.g. 'what is ahead', 'scan around', 'help me', 'read text'):");
         if (typedCmd) handleVoiceCommand(typedCmd.toLowerCase().trim());
     }
 });
@@ -537,12 +699,14 @@ helpBtn.addEventListener("click", triggerEmergencySOS);
 diagToggleBtn.addEventListener("click", () => {
     diagDrawer.classList.toggle("hidden");
     if (diagDrawer.classList.contains("hidden")) {
-        diagToggleBtn.textContent = "SHOW EXPLAINABILITY DRAWER";
+        diagChevron.textContent = "▼";
     } else {
-        diagToggleBtn.textContent = "HIDE EXPLAINABILITY DRAWER";
+        diagChevron.textContent = "▲";
     }
 });
 
-// Start up alert diagnostics log
-addDiagLog("SAHAAI client framework loaded. Device components in STANDBY.");
+// Start up client feedback
+updateSafetyState("SAFE");
+updateFooterStatus(false);
+addDiagLog("SAHAAI client framework in STANDBY. Systems ready.");
 speak("Welcome to SAHAAI. Tap Ask SAHAAI or toggle safety mode to begin.");
