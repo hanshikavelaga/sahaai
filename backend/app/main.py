@@ -56,7 +56,8 @@ from backend.app.database import (
     insert_ocr_event,
     insert_emergency_event,
     insert_scan_session,
-    insert_scan_result
+    insert_scan_result,
+    insert_spatial_event
 )
 
 # Initialize persistent tracker and audio event detector
@@ -173,6 +174,41 @@ async def log_scan_result_api(payload: ScanResultRequest):
         return {"success": success}
     except Exception as e:
         logger.error(f"Error logging scan result: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SpatialEventRequest(BaseModel):
+    session_id: str
+    track_id: str
+    object_type: str
+    x_norm: float
+    depth_norm: float
+    risk: int
+    motion_state: str
+    zone: str
+    event_type: str
+
+@app.post("/api/spatial/event")
+async def log_spatial_event_api(payload: SpatialEventRequest):
+    """
+    T20: Logs a spatial trajectory event to Supabase.
+    Performs server-side validation of range bounds and event classification.
+    """
+    if not (-1.01 <= payload.x_norm <= 1.01):
+        raise HTTPException(status_code=400, detail="x_norm must be in range [-1.0, 1.0]")
+    if not (-0.01 <= payload.depth_norm <= 1.01):
+        raise HTTPException(status_code=400, detail="depth_norm must be in range [0.0, 1.0]")
+    if not (0 <= payload.risk <= 100):
+        raise HTTPException(status_code=400, detail="risk must be in range [0, 100]")
+        
+    valid_events = {"NEW_HAZARD", "HAZARD_MOVE", "HAZARD_ESCALATE", "HAZARD_RESOLVED", "AUDIO_FUSION"}
+    if payload.event_type.upper() not in valid_events:
+        raise HTTPException(status_code=400, detail=f"event_type must be one of {valid_events}")
+        
+    try:
+        success = insert_spatial_event(payload.dict())
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Error logging spatial event: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/stream")

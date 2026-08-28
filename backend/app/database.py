@@ -192,3 +192,27 @@ def insert_scan_result(scan_uuid: str, result_data: Dict[str, Any]) -> bool:
     except Exception as e:
         logger.error(f"Supabase insert error (scan_results): {e}")
         return False
+
+def insert_spatial_event(spatial_data: Dict[str, Any]) -> bool:
+    """T20: Inserts a spatial/radar trajectory event into Supabase."""
+    if not supabase_client:
+        logger.debug("Supabase offline: Skipping spatial event insert.")
+        return True
+        
+    try:
+        db_payload = {
+            "session_id": spatial_data.get("session_id", "default_session"),
+            "track_id": str(spatial_data.get("track_id", "unknown")),
+            "object_type": spatial_data.get("object_type", "unknown"),
+            "x_norm": float(spatial_data.get("x_norm", 0.0)),
+            "depth_norm": float(spatial_data.get("depth_norm", 0.0)),
+            "risk_score": int(spatial_data.get("risk", 0)),
+            "motion_state": spatial_data.get("motion_state", "STATIC").upper(),
+            "zone": spatial_data.get("zone", "CENTER").upper(),
+            "event_type": spatial_data.get("event_type", "NEW_HAZARD").upper()
+        }
+        response = supabase_client.table("spatial_events").insert(db_payload).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase insert error (spatial_events): {e}")
+        return False

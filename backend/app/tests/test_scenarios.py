@@ -534,6 +534,85 @@ def test_scenario_o_smart_scan_summary_linguistic_compiler():
     summary_c = compile_summary_v2(collected_c)
     assert summary_c == "Smart scan complete. Environment clear."
 
+def test_scenario_p_spatial_event_logging():
+    """
+    Scenario P: Event-Based Spatial Logging Gating.
+    1. Verify displacement thresholds (delta > 0.15) for HAZARD_MOVE.
+    2. Verify risk level changes (state shift) for HAZARD_ESCALATE.
+    3. Verify track isolation across multiple items.
+    """
+    class TrackStateCache:
+        def __init__(self):
+            self.logged_states = {}
+            self.log_history = []
+            
+        def process_detection(self, track_id, x_norm, depth_norm, risk, state, object_type, motion_state, has_fusion=False):
+            track_str = str(track_id)
+            cached = self.logged_states.get(track_str)
+            state_key = state
+            event_type = "AUDIO_FUSION" if has_fusion else "NEW_HAZARD"
+            
+            if not cached:
+                new_obj = {"x_norm": x_norm, "depth_norm": depth_norm, "risk": risk, "state": state_key}
+                self.logged_states[track_str] = new_obj
+                self.log_history.append((track_str, event_type, risk, (x_norm, depth_norm)))
+            else:
+                is_escalated = state_key != cached["state"] or (has_fusion and cached["state"] != "FUSED")
+                dx = x_norm - cached["x_norm"]
+                dy = depth_norm - cached["depth_norm"]
+                delta = (dx*dx + dy*dy)**0.5
+                
+                if is_escalated:
+                    cached["state"] = "FUSED" if has_fusion else state_key
+                    cached["risk"] = risk
+                    self.log_history.append((track_str, "AUDIO_FUSION" if has_fusion else "HAZARD_ESCALATE", risk, (x_norm, depth_norm)))
+                elif delta > 0.15:
+                    cached["x_norm"] = x_norm
+                    cached["depth_norm"] = depth_norm
+                    self.log_history.append((track_str, "HAZARD_MOVE", risk, (x_norm, depth_norm)))
+                    
+        def resolve_track(self, track_id):
+            track_str = str(track_id)
+            if track_str in self.logged_states:
+                self.log_history.append((track_str, "HAZARD_RESOLVED", 0, (0.0, 0.0)))
+                del self.logged_states[track_str]
+                
+    cache = TrackStateCache()
+    
+    # Frame 1: New hazard (Track 17)
+    cache.process_detection(17, x_norm=0.10, depth_norm=0.20, risk=30, state="CAUTION", object_type="car", motion_state="STATIC")
+    assert len(cache.log_history) == 1
+    assert cache.log_history[-1][1] == "NEW_HAZARD"
+    
+    # Frame 2: Tiny movement (delta = 0.05) -> Gated / No log
+    cache.process_detection(17, x_norm=0.13, depth_norm=0.24, risk=30, state="CAUTION", object_type="car", motion_state="STATIC")
+    assert len(cache.log_history) == 1
+    
+    # Frame 3: Significant movement (delta = 0.18) -> HAZARD_MOVE logged
+    cache.process_detection(17, x_norm=0.25, depth_norm=0.33, risk=30, state="CAUTION", object_type="car", motion_state="STATIC")
+    assert len(cache.log_history) == 2
+    assert cache.log_history[-1][1] == "HAZARD_MOVE"
+    
+    # Frame 4: Risk escalation (Caution -> Critical) -> HAZARD_ESCALATE logged
+    cache.process_detection(17, x_norm=0.27, depth_norm=0.35, risk=90, state="CRITICAL", object_type="car", motion_state="APPROACHING")
+    assert len(cache.log_history) == 3
+    assert cache.log_history[-1][1] == "HAZARD_ESCALATE"
+    
+    # Frame 5: New independent Track 20 -> Gating isolation check
+    cache.process_detection(20, x_norm=-0.50, depth_norm=0.40, risk=25, state="CAUTION", object_type="person", motion_state="STATIC")
+    assert len(cache.log_history) == 4
+    assert cache.log_history[-1][0] == "20"
+    assert cache.log_history[-1][1] == "NEW_HAZARD"
+    
+    # Frame 6: Track 17 disappears -> HAZARD_RESOLVED logged
+    cache.resolve_track(17)
+    assert len(cache.log_history) == 5
+    assert cache.log_history[-1][0] == "17"
+    assert cache.log_history[-1][1] == "HAZARD_RESOLVED"
+    assert "17" not in cache.logged_states
+    assert "20" in cache.logged_states
+
+
 
 
 

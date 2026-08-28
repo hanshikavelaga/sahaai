@@ -23,6 +23,12 @@ let scanState = {
     }
 };
 
+// Radar Canvas (T18 & T19)
+const radarMapCanvas = document.getElementById("radarMapCanvas");
+const radarCtx = radarMapCanvas ? radarMapCanvas.getContext("2d") : null;
+let trackHistory = {}; // in-memory object track coordinates history for trailing (T18.5)
+let trackLoggedState = {}; // T20 state cache to compute movement delta and handle escalations
+
 // HTML Elements
 const video = document.getElementById("videoElement");
 const canvas = document.getElementById("overlayCanvas");
@@ -732,6 +738,13 @@ function handleBackendResponse(data) {
     // Draw overlays
     drawBoundingBoxes(allDetections);
     
+    // Render 2D Top-Down Radar Proximity Map (T18 & T19)
+    try {
+        renderRadarMap(allDetections);
+    } catch (e) {
+        console.warn("Radar rendering failed:", e);
+    }
+    
     // Handle Audio status feedback
     if (data.audio_hazard) {
         audioStateText.textContent = "HORN DETECTED!";
@@ -1266,6 +1279,256 @@ closeEmergencyBtn.addEventListener("click", () => {
     speak("Emergency mode cancelled.", true);
     addDiagLog("EMERGENCY SOS cancelled.");
 });
+
+// -------------------------------------------------------------
+// Pillar D: 2D Sonar Radar Proximity Map & Spatial Log Engine (T18-T20)
+// -------------------------------------------------------------
+function renderRadarMap(detections) {
+    if (!radarCtx || !radarMapCanvas) return;
+    
+    // Clear canvas
+    radarCtx.clearRect(0, 0, radarMapCanvas.width, radarMapCanvas.height);
+    
+    const userX = 100;
+    const userY = 180;
+    
+    // Draw radar background grids (Sonar circles)
+    radarCtx.strokeStyle = "#1e293b";
+    radarCtx.lineWidth = 1;
+    
+    // Draw grid rings
+    const ringRadii = [40, 90, 140, 170];
+    ringRadii.forEach(r => {
+        radarCtx.beginPath();
+        radarCtx.arc(userX, userY, r, Math.PI, 2 * Math.PI); // top half circles
+        radarCtx.stroke();
+    });
+    
+    // Draw angular guidelines (30 degree lines)
+    radarCtx.strokeStyle = "#1e293b";
+    [-30, 30].forEach(deg => {
+        const rad = deg * Math.PI / 180;
+        radarCtx.beginPath();
+        radarCtx.moveTo(userX, userY);
+        radarCtx.lineTo(userX + 170 * Math.sin(rad), userY - 170 * Math.cos(rad));
+        radarCtx.stroke();
+    });
+    
+    // Pulse animation logic for dynamic threat rings (T19)
+    const pulseOpacity = 0.3 + 0.2 * Math.sin(Date.now() / 150);
+    
+    // Check threat states
+    let maxState = "SAFE";
+    if (detections && detections.length > 0) {
+        detections.forEach(det => {
+            if (det.state === "CRITICAL") maxState = "CRITICAL";
+            else if (det.state === "ALERT" && maxState !== "CRITICAL") maxState = "ALERT";
+            else if (det.state === "CAUTION" && maxState !== "CRITICAL" && maxState !== "ALERT") maxState = "CAUTION";
+        });
+    }
+    
+    // Draw active dynamic ring fills (T19)
+    if (maxState === "CRITICAL") {
+        radarCtx.strokeStyle = `rgba(239, 68, 68, ${pulseOpacity})`; // red
+        radarCtx.lineWidth = 4;
+        radarCtx.beginPath();
+        radarCtx.arc(userX, userY, 40, Math.PI, 2 * Math.PI);
+        radarCtx.stroke();
+    } else if (maxState === "ALERT") {
+        radarCtx.strokeStyle = `rgba(249, 115, 22, ${pulseOpacity})`; // orange
+        radarCtx.lineWidth = 3;
+        radarCtx.beginPath();
+        radarCtx.arc(userX, userY, 90, Math.PI, 2 * Math.PI);
+        radarCtx.stroke();
+    } else if (maxState === "CAUTION") {
+        radarCtx.strokeStyle = `rgba(234, 179, 8, ${pulseOpacity})`; // yellow
+        radarCtx.lineWidth = 2;
+        radarCtx.beginPath();
+        radarCtx.arc(userX, userY, 140, Math.PI, 2 * Math.PI);
+        radarCtx.stroke();
+    }
+    
+    // Draw user icon at bottom center
+    radarCtx.fillStyle = "#3b82f6"; // blue
+    radarCtx.beginPath();
+    radarCtx.arc(userX, userY, 8, 0, 2 * Math.PI);
+    radarCtx.fill();
+    radarCtx.fillStyle = "#ffffff";
+    radarCtx.font = "bold 8px sans-serif";
+    radarCtx.fillText("YOU", userX - 8, userY + 14);
+    
+    const frameWidth = video.videoWidth || 640;
+    const frameHeight = video.videoHeight || 480;
+    const centerX = frameWidth / 2;
+    const currentTrackIds = new Set();
+    
+    if (detections && detections.length > 0) {
+        detections.forEach(det => {
+            const trackId = det.id !== undefined ? det.id : det.object;
+            const trackStr = trackId.toString();
+            currentTrackIds.add(trackStr);
+            
+            // Bounding box dimensions
+            const [xmin, ymin, xmax, ymax] = det.bbox;
+            const centroidX = xmin + (xmax - xmin) / 2;
+            const bboxHeight = ymax - ymin;
+            
+            // 1. Resolution-independent relative angle (T18.1)
+            const normalizedX = (centroidX - centerX) / centerX;
+            const theta = normalizedX * 30 * (Math.PI / 180); // FOV edge +/-30 degrees
+            
+            // 2. Resolution-independent relative proximity depth (T18.1)
+            const depthNorm = Math.min(1.0, (bboxHeight / frameHeight) * 2.2);
+            
+            // 3. Cartesian normalized positions (X is left/right, Y is distance forward)
+            const xNorm = depthNorm * Math.sin(theta);
+            const yNorm = depthNorm * Math.cos(theta);
+            
+            // Map to canvas pixels relative to user coordinates (T18.3)
+            const canvasX = userX + xNorm * 170;
+            const canvasY = userY - yNorm * 170;
+            
+            // Trajectory Trail Updates (T18.5)
+            if (!trackHistory[trackStr]) {
+                trackHistory[trackStr] = [];
+            }
+            trackHistory[trackStr].push({ x: canvasX, y: canvasY, time: Date.now() });
+            if (trackHistory[trackStr].length > 5) {
+                trackHistory[trackStr].shift();
+            }
+            trackHistory[trackStr].missingCount = 0; // reset missing counter
+            
+            // Render Trails (connecting lines & dots)
+            const trail = trackHistory[trackStr];
+            if (trail.length > 1) {
+                radarCtx.beginPath();
+                radarCtx.strokeStyle = "rgba(148, 163, 184, 0.4)";
+                radarCtx.lineWidth = 1;
+                radarCtx.moveTo(trail[0].x, trail[0].y);
+                for (let i = 1; i < trail.length; i++) {
+                    radarCtx.lineTo(trail[i].x, trail[i].y);
+                }
+                radarCtx.stroke();
+                
+                trail.forEach((pt, i) => {
+                    const alpha = (i + 1) / trail.length * 0.4;
+                    radarCtx.fillStyle = `rgba(148, 163, 184, ${alpha})`;
+                    radarCtx.beginPath();
+                    radarCtx.arc(pt.x, pt.y, 2, 0, 2 * Math.PI);
+                    radarCtx.fill();
+                });
+            }
+            
+            // Threat coloring
+            const color = det.state === "CRITICAL" ? "#ef4444" : 
+                          det.state === "ALERT" ? "#f97316" : 
+                          det.state === "CAUTION" ? "#eab308" : "#22c55e";
+                          
+            // Draw main obstacle dot
+            radarCtx.fillStyle = color;
+            radarCtx.beginPath();
+            radarCtx.arc(canvasX, canvasY, 6, 0, 2 * Math.PI);
+            radarCtx.fill();
+            
+            // Label
+            radarCtx.fillStyle = "#ffffff";
+            radarCtx.font = "bold 8px monospace";
+            const label = `[${trackStr}] ${det.object.substring(0, 5)}`;
+            radarCtx.fillText(label, canvasX + 8, canvasY + 3);
+            
+            // T20: Event-Based DB Logging logic (Gating filters)
+            const cached = trackLoggedState[trackStr];
+            const stateKey = det.state || "SAFE";
+            
+            // Audio Fusion indicator check
+            const hasFusion = det.reason && det.reason.some(r => r.includes("audio verified"));
+            const eventType = hasFusion ? "AUDIO_FUSION" : "NEW_HAZARD";
+            
+            if (!cached) {
+                const newObj = { x_norm: xNorm, depth_norm: yNorm, risk: det.risk || 0, state: stateKey, object: det.object, motion: det.motion };
+                trackLoggedState[trackStr] = newObj;
+                logSpatialEvent(trackStr, eventType, newObj);
+            } else {
+                const isEscalated = stateKey !== cached.state || (hasFusion && cached.state !== "FUSED");
+                
+                // Euclidean distance delta displacement (T20.7)
+                const dx = xNorm - cached.x_norm;
+                const dy = yNorm - cached.depth_norm;
+                const delta = Math.sqrt(dx * dx + dy * dy);
+                
+                if (isEscalated) {
+                    cached.state = hasFusion ? "FUSED" : stateKey;
+                    cached.risk = det.risk || 0;
+                    logSpatialEvent(trackStr, hasFusion ? "AUDIO_FUSION" : "HAZARD_ESCALATE", cached);
+                } else if (delta > 0.15) {
+                    cached.x_norm = xNorm;
+                    cached.depth_norm = yNorm;
+                    logSpatialEvent(trackStr, "HAZARD_MOVE", cached);
+                }
+            }
+        });
+    }
+    
+    // T10 track memory fade for lost targets: Fades and retains for 3 frames before resolve
+    Object.keys(trackLoggedState).forEach(trackId => {
+        if (!currentTrackIds.has(trackId)) {
+            const hist = trackHistory[trackId];
+            if (hist) {
+                hist.missingCount = (hist.missingCount || 0) + 1;
+                
+                if (hist.missingCount < 4) {
+                    // Render faded tracking dot
+                    const lastPt = hist[hist.length - 1];
+                    const alpha = 0.4 / hist.missingCount;
+                    radarCtx.fillStyle = `rgba(148, 163, 184, ${alpha})`;
+                    radarCtx.beginPath();
+                    radarCtx.arc(lastPt.x, lastPt.y, 5, 0, 2 * Math.PI);
+                    radarCtx.fill();
+                    
+                    radarCtx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+                    radarCtx.font = "bold 8px monospace";
+                    radarCtx.fillText(`[${trackId}] lost`, lastPt.x + 8, lastPt.y + 3);
+                } else {
+                    // Log resolve & delete
+                    logSpatialEvent(trackId, "HAZARD_RESOLVED", trackLoggedState[trackId]);
+                    delete trackLoggedState[trackId];
+                    delete trackHistory[trackId];
+                }
+            } else {
+                delete trackLoggedState[trackId];
+            }
+        }
+    });
+}
+
+function logSpatialEvent(trackId, eventType, data) {
+    let zone = "CENTER";
+    if (data.x_norm < -0.3) zone = "LEFT";
+    else if (data.x_norm > 0.3) zone = "RIGHT";
+    
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    
+    // Log spatial telemetry in the background via fetch (T20)
+    fetch("/api/spatial/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            session_id: sess,
+            track_id: trackId.toString(),
+            object_type: data.object || "unknown",
+            x_norm: parseFloat(data.x_norm.toFixed(3)),
+            depth_norm: parseFloat(data.depth_norm.toFixed(3)),
+            risk: parseInt(data.risk || 0),
+            motion_state: data.motion || "STATIC",
+            zone: zone,
+            event_type: eventType
+        })
+    }).then(res => {
+        addDiagLog(`Spatial Log: ${eventType} (track ${trackId})`);
+    }).catch(err => {
+        console.warn("Failed to log spatial event:", err);
+    });
+}
 
 // -------------------------------------------------------------
 // Hackathon Safety Net: Demo Mode Playback
