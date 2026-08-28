@@ -102,9 +102,97 @@ if (SpeechRecognition) {
 }
 
 // -------------------------------------------------------------
-// Speech Utilities
+// Speech, Audio & Haptics Engine (T13)
 // -------------------------------------------------------------
-function speak(message, interrupt = false) {
+const voiceStatusText = document.getElementById("voiceStatusText");
+const ariaLivePolite = document.getElementById("ariaLivePolite");
+const ariaLiveAssertive = document.getElementById("ariaLiveAssertive");
+
+let selectedVoice = null;
+let speechWatchdogTimer = null;
+let activeSpeechPriority = 0;
+
+let lastAnnouncedAlert = {
+    trackId: null,
+    message: "",
+    state: "SAFE",
+    risk: 0,
+    timestamp: 0
+};
+
+// Initialize Voices on load
+function initVoices() {
+    if (!SpeechSynthesis) {
+        if (voiceStatusText) voiceStatusText.textContent = "UNAVAILABLE";
+        return;
+    }
+    
+    const voices = SpeechSynthesis.getVoices();
+    // Prefer clear natural english voices
+    selectedVoice = voices.find(v => v.lang === "en-US" && (v.name.includes("Google") || v.name.includes("Samantha") || v.name.includes("Natural")))
+                    || voices.find(v => v.lang.startsWith("en"))
+                    || voices[0];
+                    
+    if (voiceStatusText) {
+        if (selectedVoice) {
+            voiceStatusText.textContent = "READY";
+            voiceStatusText.className = "text-[9px] font-black text-green-500 uppercase tracking-wider";
+        } else {
+            voiceStatusText.textContent = "TAP TO ENABLE";
+            voiceStatusText.className = "text-[9px] font-black text-amber-500 uppercase tracking-wider";
+        }
+    }
+}
+
+if (SpeechSynthesis) {
+    if (SpeechSynthesis.onvoiceschanged !== undefined) {
+        SpeechSynthesis.onvoiceschanged = initVoices;
+    }
+    initVoices();
+}
+
+// Play Critical Beep Pattern (Stage 1 Audio)
+function playCriticalBeep() {
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return;
+        const audioCtx = new AudioContext();
+        
+        function beep(delay) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime + delay);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime + delay);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + delay + 0.15);
+            
+            osc.start(audioCtx.currentTime + delay);
+            osc.stop(audioCtx.currentTime + delay + 0.15);
+        }
+        
+        beep(0);
+        beep(0.2); // Double beep
+    } catch (e) {
+        console.error("Audio beep synthesis error:", e);
+    }
+}
+
+// Trigger haptic vibration feedback (Stage 1 Haptics)
+function triggerHapticFeedback(state) {
+    if (!navigator.vibrate) return;
+    
+    if (state === "CRITICAL") {
+        navigator.vibrate([300, 100, 300]); // Strong double pulse
+    } else if (state === "ALERT") {
+        navigator.vibrate([150]); // Short warning pulse
+    }
+}
+
+// Primary speech output wrapper (handles queue priorities & watchdog timers)
+function speak(message, priorityOrInterrupt = 30, legacyInterrupt = false) {
     if (!message) return;
     
     subtitleText.textContent = `"${message}"`;
@@ -114,13 +202,144 @@ function speak(message, interrupt = false) {
         return;
     }
     
-    if (interrupt) {
+    let priority = 30;
+    let interrupt = false;
+    
+    if (typeof priorityOrInterrupt === "boolean") {
+        interrupt = priorityOrInterrupt;
+        priority = interrupt ? 100 : 30;
+    } else {
+        priority = priorityOrInterrupt;
+        interrupt = legacyInterrupt;
+    }
+    
+    if (SpeechSynthesis.paused) {
+        SpeechSynthesis.resume();
+    }
+    
+    // Interrupt if new priority exceeds currently speaking priority
+    if (interrupt || priority > activeSpeechPriority) {
         SpeechSynthesis.cancel();
+        if (speechWatchdogTimer) {
+            clearTimeout(speechWatchdogTimer);
+            speechWatchdogTimer = null;
+        }
+        activeSpeechPriority = priority;
+    } else {
+        if (SpeechSynthesis.speaking && priority <= activeSpeechPriority) {
+            return; // Suppress lower/equal priority spam
+        }
     }
     
     const utterance = new SpeechSynthesisUtterance(message);
-    utterance.rate = 1.05;
+    if (selectedVoice) utterance.voice = selectedVoice;
+    
+    // Rate tuning: speed up for critical priority (T13.3)
+    if (priority >= 100) {
+        utterance.rate = 1.20;
+    } else if (priority >= 60) {
+        utterance.rate = 1.15;
+    } else {
+        utterance.rate = 1.05;
+    }
+    
+    utterance.onstart = () => {
+        activeSpeechPriority = priority;
+        const watchdogLimit = priority >= 100 ? 4000 : 6000; // Watchdog limit
+        
+        if (speechWatchdogTimer) clearTimeout(speechWatchdogTimer);
+        speechWatchdogTimer = setTimeout(() => {
+            if (SpeechSynthesis.speaking) {
+                console.warn("Speech Synthesis watchdog active. Resetting speech stream.");
+                SpeechSynthesis.cancel();
+                activeSpeechPriority = 0;
+            }
+        }, watchdogLimit);
+    };
+    
+    utterance.onend = utterance.onerror = () => {
+        if (speechWatchdogTimer) {
+            clearTimeout(speechWatchdogTimer);
+            speechWatchdogTimer = null;
+        }
+        activeSpeechPriority = 0;
+    };
+    
     SpeechSynthesis.speak(utterance);
+}
+
+// processSafetyAlert - T13 central speech guard and deduplication handler
+function processSafetyAlert(alert, isDemo = false) {
+    if (!alert || !alert.message) return;
+    
+    const priority = alert.state === "CRITICAL" ? 100 :
+                     alert.state === "ALERT" ? 60 :
+                     alert.state === "CAUTION" ? 30 : 10;
+                     
+    const currentMsg = alert.message;
+    const trackId = alert.id !== undefined ? alert.id : alert.object;
+    const currentTime = Date.now();
+    
+    let shouldSpeak = false;
+    let alertState = "NEW";
+    
+    if (lastAnnouncedAlert.trackId === trackId) {
+        const timeDiff = (currentTime - lastAnnouncedAlert.timestamp) / 1000.0;
+        const riskDiff = alert.risk - lastAnnouncedAlert.risk;
+        const stateChanged = alert.state !== lastAnnouncedAlert.state;
+        
+        if (stateChanged || riskDiff > 15) {
+            shouldSpeak = true;
+            alertState = "UPDATED";
+        } else if (timeDiff > 6.0) {
+            shouldSpeak = true;
+            alertState = "ACTIVE";
+        } else {
+            shouldSpeak = false;
+            alertState = "ACTIVE";
+        }
+    } else {
+        shouldSpeak = true;
+        alertState = "NEW";
+    }
+    
+    if (shouldSpeak) {
+        lastAnnouncedAlert = {
+            trackId: trackId,
+            message: currentMsg,
+            state: alert.state,
+            risk: alert.risk,
+            timestamp: currentTime
+        };
+        
+        if (alert.state === "CRITICAL") {
+            playCriticalBeep();
+            triggerHapticFeedback("CRITICAL");
+            speak(currentMsg, 100, true);
+            
+            if (ariaLiveAssertive) {
+                ariaLiveAssertive.textContent = currentMsg;
+            }
+        } else if (alert.state === "ALERT") {
+            triggerHapticFeedback("ALERT");
+            speak(currentMsg, 60, false);
+            
+            if (ariaLiveAssertive) {
+                ariaLiveAssertive.textContent = currentMsg;
+            }
+        } else if (alert.state === "CAUTION") {
+            speak(currentMsg, 30, false);
+            
+            if (ariaLivePolite) {
+                ariaLivePolite.textContent = currentMsg;
+            }
+        }
+        
+        const logPrefix = isDemo ? "DEMO ALERT" : "ANNOUNCEMENT";
+        const colorDot = alert.state === "CRITICAL" ? "🔴" :
+                         alert.state === "ALERT" ? "🟠" : "🟡";
+        addDiagLog(`${colorDot} [${logPrefix}] ${alert.object.toUpperCase()} ${alert.direction.toUpperCase()} (${alert.motion.toUpperCase()})`);
+    }
 }
 
 // -------------------------------------------------------------
@@ -385,12 +604,8 @@ function handleBackendResponse(data) {
     // Update Explainability fields
     updateExplainability(alert);
     
-    // Spoken alerts
-    if (alert.message) {
-        const isCritical = alert.state === "CRITICAL";
-        speak(alert.message, isCritical);
-        addDiagLog(`ANNOUNCEMENT: "${alert.message}" (${alert.state})`);
-    }
+    // Spoken alerts processed through T13 Speech Guard
+    processSafetyAlert(alert, false);
 }
 
 // -------------------------------------------------------------
@@ -590,11 +805,8 @@ function runDemoModeStep() {
         statusAudio.className = "text-green-500";
     }
 
-    if (alert.message) {
-        const isCritical = step.state === "CRITICAL";
-        speak(alert.message, isCritical);
-        addDiagLog(`DEMO ALERT: "${alert.message}" (${step.state})`);
-    }
+    // Spoken alerts processed through T13 Speech Guard
+    processSafetyAlert(alert, true);
     
     demoIndex++;
 }
@@ -608,6 +820,13 @@ function toggleSafetyMode() {
     if (isSafetyActive) {
         toggleSafetyBtn.textContent = "PAUSE SAFETY MODE";
         toggleSafetyBtn.className = "w-full bg-yellow-600 hover:bg-yellow-500 font-black p-4 rounded-xl text-lg tracking-wider transition shadow-lg border-b-4 border-yellow-800 active:border-b-0 active:mt-1 active:mb-[-1px]";
+        
+        // Initialize Speech state on user tap (T13)
+        if (SpeechSynthesis && voiceStatusText) {
+            voiceStatusText.textContent = "READY";
+            voiceStatusText.className = "text-[9px] font-black text-green-500 uppercase tracking-wider";
+        }
+        
         speak("Safety active.", true);
         addDiagLog("Safety companion activated.");
         

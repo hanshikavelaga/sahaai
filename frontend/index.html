@@ -30,6 +30,12 @@
             <h1 class="text-xl font-black tracking-wider uppercase">SAHAAI</h1>
         </div>
         <div class="flex items-center space-x-3">
+            <!-- Voice Status Badge -->
+            <div class="flex items-center space-x-1 bg-slate-950 px-2 py-0.5 rounded-full border border-slate-800">
+                <span class="text-[9px] font-black uppercase tracking-wider text-slate-400">🔊 VOICE:</span>
+                <span id="voiceStatusText" class="text-[9px] font-black text-amber-500 uppercase tracking-wider">STANDBY</span>
+            </div>
+            
             <!-- Safety Status Indicator -->
             <div class="flex items-center space-x-1.5 bg-slate-950 px-2.5 py-1 rounded-full border border-slate-800">
                 <span id="headerStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500 animate-pulse"></span>
@@ -208,6 +214,10 @@
             <p class="text-xs text-slate-400 italic">"What is ahead?", "Scan around me", "Read text", or "Help me"</p>
         </div>
     </dialog>
+
+    <!-- Split accessibility announcements for screen-readers (T13) -->
+    <div id="ariaLivePolite" aria-live="polite" class="sr-only" role="status"></div>
+    <div id="ariaLiveAssertive" aria-live="assertive" class="sr-only" role="alert"></div>
 
     <!-- Script File Import -->
     <script src="app.js?v=2"></script>
