@@ -1,5 +1,8 @@
 import logging
+import os
+import urllib.request
 from typing import List, Dict, Any
+import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -30,19 +33,30 @@ SEVERITIES = {
     "person": 0.5
 }
 
-# Try loading YOLOv8 model, fallback to mock if not installed or fails
-model = None
+# Download official lightweight YOLOv8 nano ONNX model (under 25MB)
+ONNX_MODEL_PATH = os.path.abspath("yolov8n.onnx")
+net = None
+
 try:
-    from ultralytics import YOLO
-    # Loads or downloads the lightweight nano YOLO model
-    model = YOLO("yolov8n.pt")
-    logger.info("YOLOv8 nano model loaded successfully")
+    if not os.path.exists(ONNX_MODEL_PATH):
+        logger.info("Memory Optimization: Downloading lightweight YOLOv8 ONNX model (23MB)...")
+        url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
+        # Download directly via urllib
+        urllib.request.urlretrieve(url, ONNX_MODEL_PATH)
+        logger.info("ONNX download complete.")
+        
+    if os.path.exists(ONNX_MODEL_PATH):
+        # Read model using OpenCV's DNN module (bypasses PyTorch entirely, saving ~600MB RAM)
+        net = cv2.dnn.readNetFromONNX(ONNX_MODEL_PATH)
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        logger.info("YOLOv8 ONNX loaded successfully using OpenCV DNN (Low-memory mode).")
 except Exception as e:
-    logger.warning(f"Could not load YOLOv8 model ({e}). Using mock object detection fallback.")
+    logger.error(f"Could not load YOLOv8 ONNX model ({e}). Using mock object detection fallback.")
 
 def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
     """
-    Runs YOLOv8 inference on a frame.
+    Runs YOLOv8 ONNX inference via OpenCV DNN.
     Returns filtered object detections containing bounding boxes, classes, and confidence.
     """
     detections = []
@@ -52,33 +66,68 @@ def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
         
     frame_height, frame_width = image.shape[:2]
 
-    # If YOLOv8 model is successfully loaded, use it
-    if model is not None:
+    # Run inference using OpenCV DNN if loaded
+    if net is not None:
         try:
-            results = model(image, verbose=False)
-            if results and len(results) > 0:
-                boxes = results[0].boxes
-                for box in boxes:
-                    cls_id = int(box.cls[0].item())
-                    conf = float(box.conf[0].item())
+            # YOLOv8 expects 640x640, values scaled to [0,1], swap blue/red channels
+            blob = cv2.dnn.blobFromImage(image, 1/255.0, (640, 640), swapRB=True, crop=False)
+            net.setInput(blob)
+            preds = net.forward() # shape: (1, 84, 8400)
+            
+            # Transpose to shape (8400, 84) where 84 = [x_center, y_center, w, h, class0_score, ...]
+            preds = preds[0].T
+            
+            boxes = []
+            confidences = []
+            class_ids = []
+            
+            for pred in preds:
+                scores = pred[4:]
+                class_id = int(np.argmax(scores))
+                conf = float(scores[class_id])
+                
+                # Check confidence threshold
+                if class_id in HAZARD_CLASSES and conf >= 0.40:
+                    x_center, y_center, width, height = pred[0:4]
                     
-                    # Filter for classes of interest and minimum confidence of 0.40
-                    if cls_id in HAZARD_CLASSES and conf >= 0.40:
-                        class_name = HAZARD_CLASSES[cls_id]
-                        xyxy = box.xyxy[0].tolist() # [xmin, ymin, xmax, ymax]
-                        
-                        detections.append({
-                            "class": class_name,
-                            "confidence": conf,
-                            "bbox": xyxy, # [xmin, ymin, xmax, ymax]
-                            "severity": SEVERITIES.get(class_name, 0.4)
-                        })
+                    # Map coordinates back to original frame dimensions
+                    x_factor = frame_width / 640.0
+                    y_factor = frame_height / 640.0
+                    
+                    xmin = int((x_center - width / 2) * x_factor)
+                    ymin = int((y_center - height / 2) * y_factor)
+                    xmax = int((x_center + width / 2) * x_factor)
+                    ymax = int((y_center + height / 2) * y_factor)
+                    
+                    # Bind boxes inside frame limits
+                    xmin = max(0, xmin)
+                    ymin = max(0, ymin)
+                    xmax = min(frame_width, xmax)
+                    ymax = min(frame_height, ymax)
+                    
+                    boxes.append([xmin, ymin, xmax, ymax])
+                    confidences.append(conf)
+                    class_ids.append(class_id)
+            
+            # Apply Non-Maximum Suppression (NMS) to eliminate duplicate overlapping boxes
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.40, 0.45)
+            
+            if len(indices) > 0:
+                # Handle OpenCV output flat array differences
+                flat_indices = indices.flatten() if hasattr(indices, 'flatten') else [i[0] for i in indices]
+                for idx in flat_indices:
+                    class_name = HAZARD_CLASSES[class_ids[idx]]
+                    detections.append({
+                        "class": class_name,
+                        "confidence": confidences[idx],
+                        "bbox": boxes[idx], # [xmin, ymin, xmax, ymax]
+                        "severity": SEVERITIES.get(class_name, 0.4)
+                    })
             return detections
         except Exception as e:
-            logger.error(f"YOLO inference error: {e}. Falling back to mock detection.")
+            logger.error(f"ONNX inference error: {e}. Falling back to mock detection.")
 
-    # FALLBACK MOCK DETECTION (Ensures UI works even without PyTorch/YOLO loading)
-    # Checks if frame has anything, mock-detects objects based on simple image statistics
+    # FALLBACK MOCK DETECTION (Triggered only if ONNX fails)
     mean_val = float(np.mean(image))
     if mean_val > 50:
         if int(mean_val) % 3 == 0:
