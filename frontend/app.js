@@ -802,8 +802,8 @@ function drawBoundingBoxes(detections) {
         ctx.font = "bold 16px sans-serif";
         const trackId = det.id !== undefined ? `[${det.id}] ` : "";
         const label = devModeActive ? 
-            `${det.object.toUpperCase()} ${trackId}(${Math.round(det.confidence*100)}%) - ${det.motion}` : 
-            `${det.object.toUpperCase()}`;
+            `${det.object.toUpperCase()} ${trackId}(${Math.round(det.confidence*100)}%) [RISK: ${det.risk || 0}%] - ${det.motion}` : 
+            `${det.object.toUpperCase()} (${det.risk || 0}%)`;
         ctx.fillText(label, xmin, ymin > 25 ? ymin - 10 : ymin + 20);
     });
 }
@@ -967,8 +967,8 @@ function handleBackendResponse(data) {
         
         trackConfirmationFrames[trackStr] = (trackConfirmationFrames[trackStr] || 0) + 1;
         
-        // Critical alerts bypass 3-frame delay; Caution/Alert require 3 confirmations
-        if (alert.state === "CRITICAL" || trackConfirmationFrames[trackStr] >= 3) {
+        // Critical alerts or person detections bypass 3-frame delay; Caution/Alert require 3 confirmations
+        if (alert.state === "CRITICAL" || alert.object === "person" || trackConfirmationFrames[trackStr] >= 3) {
             processSafetyAlert(alert, false);
         } else {
             addDiagLog(`[GATING] Ignoring ${alert.object} (seen ${trackConfirmationFrames[trackStr]}/3 frames)`);
@@ -2270,7 +2270,7 @@ function runDemoModeStep() {
         ctx.strokeRect(xmin, ymin, xmax-xmin, ymax-ymin);
         ctx.fillStyle = ctx.strokeStyle;
         ctx.font = "bold 16px monospace";
-        ctx.fillText(`${det.object.toUpperCase()} (${det.motion})`, xmin, ymin - 10);
+        ctx.fillText(`${det.object.toUpperCase()} (${det.motion}) - RISK: ${det.risk || 0}%`, xmin, ymin - 10);
     });
     
     // Update card values
