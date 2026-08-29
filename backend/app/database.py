@@ -277,8 +277,26 @@ def insert_emergency_event(event_data: Dict[str, Any]) -> bool:
             "contacts_notified": int(event_data.get("contacts_notified", 0))
         }
         
-        # 1. Log event to Supabase database
-        response = supabase_client.table("emergency_events").insert(db_payload).execute()
+        # 1. Log event to Supabase database (non-blocking with schema mismatch fallback)
+        try:
+            response = supabase_client.table("emergency_events").insert(db_payload).execute()
+            logger.info("Emergency event logged to Supabase successfully.")
+        except Exception as db_err:
+            logger.warning(f"Supabase logging failed: {db_err}")
+            try:
+                # Fallback to core fields if custom columns are missing in user database schema
+                db_payload_fallback = {
+                    "session_id": db_payload["session_id"],
+                    "trigger_source": db_payload["trigger_source"],
+                    "status": db_payload["status"],
+                    "latitude": db_payload["latitude"],
+                    "longitude": db_payload["longitude"],
+                    "location_available": db_payload["location_available"]
+                }
+                response = supabase_client.table("emergency_events").insert(db_payload_fallback).execute()
+                logger.info("Emergency event logged to Supabase successfully using core fields fallback.")
+            except Exception as db_err_fallback:
+                logger.warning(f"Supabase logging fallback also failed (proceeding to Twilio SMS): {db_err_fallback}")
         
         # 2. Twilio SMS Dispatch
         account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
