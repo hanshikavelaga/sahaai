@@ -81,6 +81,37 @@ except Exception as e:
     logger.error(f"Could not load YOLOv8 ONNX model ({e}). Using mock object detection fallback.")
     net = None
 
+def detect_text_regions(image: np.ndarray) -> bool:
+    """
+    Very lightweight text region detector using Sobel horizontal gradients
+    and contour geometry checks. Prevents running expensive OCR on every frame.
+    """
+    if image is None:
+        return False
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        
+        # Sobel horizontal gradients
+        grad_x = cv2.Sobel(gray, cv2.CV_8U, 1, 0, ksize=3)
+        _, thresh = cv2.threshold(grad_x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Morphological rect kernel to group characters horizontally
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+        closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        
+        # Find contour areas
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for c in contours:
+            x, y, w, h = cv2.boundingRect(c)
+            aspect_ratio = w / float(h)
+            # Text lines are typically wider than they are tall
+            if w > 30 and h > 8 and 2.0 < aspect_ratio < 10.0:
+                return True
+    except Exception as e:
+        logger.warning(f"Lightweight text detection failed: {e}")
+    return False
+
 def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
     """
     Runs YOLOv8 ONNX inference via OpenCV DNN.

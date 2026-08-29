@@ -44,7 +44,7 @@ def log_event(event_type: str, details: Dict[str, Any]):
         EVENT_LOG.pop(0)
 
 # Import SAHAAI sub-modules (created in subsequent steps)
-from backend.app.vision import detect_objects
+from backend.app.vision import detect_objects, detect_text_regions
 from backend.app.tracking import ObjectTracker
 from backend.app.hazard import calculate_hazard_priority
 from backend.app.attention import prioritize_alerts
@@ -328,6 +328,7 @@ async def websocket_stream(websocket: WebSocket):
             raw_detections = []
             vision_timestamp = payload.get("timestamp") or int(time.time() * 1000)
             current_fusion_state = "NO_FUSION"
+            text_present = False
             
             if image_data:
                 try:
@@ -341,6 +342,7 @@ async def websocket_stream(websocket: WebSocket):
                         frame_height, frame_width = img.shape[:2]
                         # Run YOLO object detection
                         raw_detections = detect_objects(img)
+                        text_present = detect_text_regions(img)
                         
                         # Update Tracker & Motion (T10)
                         tracked_objects = tracker.update(raw_detections, frame_width, frame_height)
@@ -507,7 +509,8 @@ async def websocket_stream(websocket: WebSocket):
                 "status": "success",
                 "active_alert": response_alert,
                 "all_detections": frame_detections,
-                "audio_hazard": audio_alert is not None
+                "audio_hazard": audio_alert is not None,
+                "text_present": text_present
             }))
             
     except WebSocketDisconnect:

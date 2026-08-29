@@ -102,6 +102,8 @@ let sosTimer = null;
 let emergencyState = "IDLE"; // "IDLE", "COUNTDOWN", "LOCATION_REQUEST", "SOS_TRIGGERED", "SOS_ACTIVE"
 let emergencyContacts = []; // local cache loaded from database (T21.5)
 let startupWaitAnswer = false; // startup voice greeting state
+let trackConfirmationFrames = {}; // T10/P0 temporal validation confirm frames map
+let sosWaitDialChoice = false; // T21/P1 SOS emergency dialer choice state
 
 // Dialogs
 const scanDialog = document.getElementById("scanDialog");
@@ -249,81 +251,114 @@ function triggerHapticFeedback(state) {
     }
 }
 
-// Primary speech output wrapper (handles queue priorities & watchdog timers)
+class SpeechQueue {
+    constructor() {
+        this.queue = [];
+        this.isSpeaking = false;
+        this.watchdogTimer = null;
+    }
+    
+    add(message, priority) {
+        if (priority >= 100) {
+            // Preempt immediately
+            this.queue = [];
+            if (typeof SpeechSynthesis !== "undefined" && SpeechSynthesis) {
+                SpeechSynthesis.cancel();
+            }
+            this.isSpeaking = false;
+            this.speakMessage(message, priority);
+        } else {
+            // If already speaking equal or higher priority, ignore CAUTION/ALERT updates to avoid spam
+            if (this.isSpeaking && priority <= activeSpeechPriority) {
+                return;
+            }
+            this.queue.push({ message, priority });
+            this.processNext();
+        }
+    }
+    
+    processNext() {
+        if (this.isSpeaking || this.queue.length === 0) return;
+        
+        const next = this.queue.shift();
+        this.speakMessage(next.message, next.priority);
+    }
+    
+    speakMessage(message, priority) {
+        if (typeof SpeechSynthesis === "undefined" || !SpeechSynthesis) {
+            addDiagLog(`TTS print fallback: "${message}"`);
+            return;
+        }
+        
+        this.isSpeaking = true;
+        activeSpeechPriority = priority;
+        
+        const utterance = new SpeechSynthesisUtterance(message);
+        if (selectedVoice) utterance.voice = selectedVoice;
+        
+        // Dynamic rates matching priority rules
+        if (priority >= 100) {
+            utterance.rate = 1.20;
+        } else if (priority >= 60) {
+            utterance.rate = 1.15;
+        } else {
+            utterance.rate = 1.05;
+        }
+        
+        utterance.onend = () => {
+            this.isSpeaking = false;
+            activeSpeechPriority = 0;
+            if (this.watchdogTimer) {
+                clearTimeout(this.watchdogTimer);
+                this.watchdogTimer = null;
+            }
+            this.processNext();
+        };
+        
+        utterance.onerror = () => {
+            this.isSpeaking = false;
+            activeSpeechPriority = 0;
+            if (this.watchdogTimer) {
+                clearTimeout(this.watchdogTimer);
+                this.watchdogTimer = null;
+            }
+            this.processNext();
+        };
+        
+        if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+        this.watchdogTimer = setTimeout(() => {
+            if (SpeechSynthesis.speaking) {
+                console.warn("Speech Synthesis watchdog timed out. Preempting.");
+                SpeechSynthesis.cancel();
+                this.isSpeaking = false;
+                activeSpeechPriority = 0;
+                this.processNext();
+            }
+        }, priority >= 100 ? 4000 : 6000);
+        
+        SpeechSynthesis.speak(utterance);
+    }
+}
+
+const speechQueue = new SpeechQueue();
+
 function speak(message, priorityOrInterrupt = 30, legacyInterrupt = false) {
     if (!message) return;
     
     subtitleText.textContent = `"${message}"`;
     
-    if (!SpeechSynthesis) {
-        addDiagLog(`TTS print fallback: "${message}"`);
-        return;
-    }
-    
     let priority = 30;
-    let interrupt = false;
-    
     if (typeof priorityOrInterrupt === "boolean") {
-        interrupt = priorityOrInterrupt;
-        priority = interrupt ? 100 : 30;
+        priority = priorityOrInterrupt ? 100 : 30;
     } else {
         priority = priorityOrInterrupt;
-        interrupt = legacyInterrupt;
     }
     
-    if (SpeechSynthesis.paused) {
+    if (typeof SpeechSynthesis !== "undefined" && SpeechSynthesis && SpeechSynthesis.paused) {
         SpeechSynthesis.resume();
     }
     
-    // Interrupt if new priority exceeds currently speaking priority
-    if (interrupt || priority > activeSpeechPriority) {
-        SpeechSynthesis.cancel();
-        if (speechWatchdogTimer) {
-            clearTimeout(speechWatchdogTimer);
-            speechWatchdogTimer = null;
-        }
-        activeSpeechPriority = priority;
-    } else {
-        if (SpeechSynthesis.speaking && priority <= activeSpeechPriority) {
-            return; // Suppress lower/equal priority spam
-        }
-    }
-    
-    const utterance = new SpeechSynthesisUtterance(message);
-    if (selectedVoice) utterance.voice = selectedVoice;
-    
-    // Rate tuning: speed up for critical priority (T13.3)
-    if (priority >= 100) {
-        utterance.rate = 1.20;
-    } else if (priority >= 60) {
-        utterance.rate = 1.15;
-    } else {
-        utterance.rate = 1.05;
-    }
-    
-    utterance.onstart = () => {
-        activeSpeechPriority = priority;
-        const watchdogLimit = priority >= 100 ? 4000 : 6000; // Watchdog limit
-        
-        if (speechWatchdogTimer) clearTimeout(speechWatchdogTimer);
-        speechWatchdogTimer = setTimeout(() => {
-            if (SpeechSynthesis.speaking) {
-                console.warn("Speech Synthesis watchdog active. Resetting speech stream.");
-                SpeechSynthesis.cancel();
-                activeSpeechPriority = 0;
-            }
-        }, watchdogLimit);
-    };
-    
-    utterance.onend = utterance.onerror = () => {
-        if (speechWatchdogTimer) {
-            clearTimeout(speechWatchdogTimer);
-            speechWatchdogTimer = null;
-        }
-        activeSpeechPriority = 0;
-    };
-    
-    SpeechSynthesis.speak(utterance);
+    speechQueue.add(message, priority);
 }
 
 // processSafetyAlert - T13 central speech guard and deduplication handler
@@ -803,6 +838,13 @@ function handleBackendResponse(data) {
         audioStateText.textContent = "HORN DETECTED!";
         audioStateText.className = "text-red-500 font-extrabold animate-pulse";
         statusAudio.className = "text-red-500";
+        
+        if (!scanState.active && isSafetyActive) {
+            speak("Vehicle-related sound detected. Scanning surroundings.", 100, true);
+            setTimeout(() => {
+                triggerSmartScan();
+            }, 3000);
+        }
     } else {
         audioStateText.textContent = "LISTENING";
         audioStateText.className = "text-slate-400 font-bold";
@@ -852,8 +894,27 @@ function handleBackendResponse(data) {
     // Update Explainability fields
     updateExplainability(alert);
     
-    // Spoken alerts processed through T13 Speech Guard
-    processSafetyAlert(alert, false);
+    // Spoken alerts processed through T13 Speech Guard with P0 temporal rules
+    if (alert.state === "SAFE") {
+        processSafetyAlert(alert, false);
+    } else {
+        const trackId = alert.id !== undefined ? alert.id : alert.object;
+        const trackStr = trackId.toString();
+        
+        trackConfirmationFrames[trackStr] = (trackConfirmationFrames[trackStr] || 0) + 1;
+        
+        // Critical alerts bypass 3-frame delay; Caution/Alert require 3 confirmations
+        if (alert.state === "CRITICAL" || trackConfirmationFrames[trackStr] >= 3) {
+            processSafetyAlert(alert, false);
+        } else {
+            addDiagLog(`[GATING] Ignoring ${alert.object} (seen ${trackConfirmationFrames[trackStr]}/3 frames)`);
+        }
+    }
+    
+    // Automatic OCR detection trigger (P1.14)
+    if (data.text_present) {
+        triggerAutoOCR();
+    }
 }
 
 // -------------------------------------------------------------
@@ -888,6 +949,34 @@ function handleVoiceCommand(command) {
             speak("Safety mode not started. SAHAAI is on standby.", true);
         } else {
             speak("Should I start safety mode? Say yes or no.", true);
+        }
+        return;
+    }
+    
+    // 0.1 SOS Emergency Dialer Choice response handler (P1.7)
+    if (sosWaitDialChoice) {
+        if (command.includes("contact") || command.includes("call contact")) {
+            sosWaitDialChoice = false;
+            if (emergencyContacts.length > 0) {
+                const c = emergencyContacts[0];
+                speak(`Calling emergency contact: ${c.name}.`, true);
+                setTimeout(() => { window.location.href = `tel:${c.phone_number}`; }, 1200);
+            } else {
+                speak("No emergency contact found.", true);
+            }
+        } else if (command.includes("112") || command.includes("one one two")) {
+            sosWaitDialChoice = false;
+            speak("Calling emergency services 112.", true);
+            setTimeout(() => { window.location.href = "tel:112"; }, 1200);
+        } else if (command.includes("108") || command.includes("one zero eight") || command.includes("one oh eight")) {
+            sosWaitDialChoice = false;
+            speak("Calling emergency services 108.", true);
+            setTimeout(() => { window.location.href = "tel:108"; }, 1200);
+        } else if (command.includes("cancel") || command.includes("stop")) {
+            sosWaitDialChoice = false;
+            speak("Calling cancelled.", true);
+        } else {
+            speak("Say CONTACT, 112, or 108.", true);
         }
         return;
     }
@@ -1423,6 +1512,60 @@ async function triggerOCR() {
     }
 }
 
+let lastOCRTime = 0;
+let announcedTextCache = {};
+let ocrInProgress = false;
+
+async function triggerAutoOCR() {
+    if (!isSafetyActive) return;
+    
+    const now = Date.now();
+    if (ocrInProgress || (now - lastOCRTime < 3000)) return;
+    
+    if (activeSpeechPriority >= 100) return;
+    
+    ocrInProgress = true;
+    lastOCRTime = now;
+    
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = 320;
+    tempCanvas.height = 240;
+    const tempCtx = tempCanvas.getContext("2d");
+    
+    if (localMediaStream && video.readyState === video.HAVE_ENOUGH_DATA) {
+        tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+        const base64Image = tempCanvas.toDataURL("image/jpeg", 0.6);
+        
+        try {
+            const res = await fetch("/api/ocr", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ image_base64: base64Image })
+            });
+            const data = await res.json();
+            
+            if (data.text && data.text.trim()) {
+                const normText = data.text.toLowerCase().trim().replace(/[^a-z0-9 ]/g, "");
+                
+                if (normText) {
+                    const cachedTime = announcedTextCache[normText];
+                    if (!cachedTime || (now - cachedTime > 15000)) {
+                        announcedTextCache[normText] = now;
+                        speak(data.text, 30, false);
+                        addDiagLog(`[AUTO OCR] Read: "${data.text}"`);
+                    } else {
+                        addDiagLog(`[AUTO OCR] Suppressed duplicate: "${data.text}"`);
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn("Auto OCR failed:", err);
+        }
+    }
+    
+    ocrInProgress = false;
+}
+
 // -------------------------------------------------------------
 // Emergency SOS Modal
 // -------------------------------------------------------------
@@ -1493,6 +1636,11 @@ function cancelEmergencySOS() {
     addDiagLog("Emergency SOS cancelled.");
 }
 
+let currentLat = null;
+let currentLon = null;
+let currentAcc = null;
+let currentLocAvailable = false;
+
 function executeEmergencySOS(source) {
     emergencyState = "LOCATION_REQUEST";
     
@@ -1506,20 +1654,48 @@ function executeEmergencySOS(source) {
     
     updateSafetyState("CRITICAL"); // triggers continuous alarm T13
     
+    // Reset background GPS cache
+    currentLat = null;
+    currentLon = null;
+    currentAcc = null;
+    currentLocAvailable = false;
+    
+    // Fetch Location in Parallel (P1.7)
     if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
             (pos) => {
-                sendSOSAlert(source, pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true);
+                currentLat = pos.coords.latitude;
+                currentLon = pos.coords.longitude;
+                currentAcc = pos.coords.accuracy;
+                currentLocAvailable = true;
+                addDiagLog("GPS location resolved in background.");
             },
             (err) => {
-                console.warn("GPS access failed:", err);
-                sendSOSAlert(source, null, null, null, false);
+                console.warn("GPS Background access failed:", err);
             },
             { enableHighAccuracy: true, timeout: 5000 }
         );
-    } else {
-        sendSOSAlert(source, null, null, null, false);
     }
+    
+    // Set dialing choice listener
+    sosWaitDialChoice = true;
+    
+    let contactPrompt = "";
+    if (emergencyContacts.length > 0) {
+        const primary = emergencyContacts[0].name;
+        contactPrompt = `Your emergency contact is ${primary}. Say CONTACT, 112, or 108.`;
+    } else {
+        contactPrompt = "No emergency contact found. Say 112, or 108.";
+    }
+    
+    speak(contactPrompt, 100, true);
+    
+    // Automatically trigger continuous listening for the choice
+    setTimeout(() => {
+        if (sosWaitDialChoice && recognition) {
+            try { recognition.start(); } catch (e) {}
+        }
+    }, 4500);
 }
 
 function sendSOSAlert(source, lat, lon, acc, locationAvailable) {
@@ -1529,12 +1705,12 @@ function sendSOSAlert(source, lat, lon, acc, locationAvailable) {
     sosStatusText.className = "text-red-500 font-bold animate-pulse";
     sosContactsCount.textContent = `${emergencyContacts.length} contacts notified`;
     
-    if (locationAvailable) {
+    if (locationAvailable && lat !== null) {
         sosCoordsText.textContent = `LAT: ${lat.toFixed(4)} | LON: ${lon.toFixed(4)} (±${acc.toFixed(0)}m)`;
-        speak("Emergency alert sent to your emergency contacts. Your location has been shared.", true);
+        speak("Emergency alert sent to emergency contacts. Location shared.", 100, true);
     } else {
         sosCoordsText.textContent = "LOCATION UNAVAILABLE";
-        speak("Emergency alert sent, but your location is unavailable.", true);
+        speak("Emergency alert sent, but your location is unavailable.", 100, true);
     }
     
     dialEmergencyBtn.classList.remove("hidden");
@@ -1967,6 +2143,7 @@ function renderRadarMap(detections) {
                 } else {
                     // Log resolve & delete
                     logSpatialEvent(trackId, "HAZARD_RESOLVED", trackLoggedState[trackId]);
+                    delete trackConfirmationFrames[trackId];
                     delete trackLoggedState[trackId];
                     delete trackHistory[trackId];
                 }
@@ -2224,13 +2401,31 @@ if (startupModal) {
             console.warn(e);
         }
         
-        speak("Welcome to SAHAAI. Should I start safety mode?", true);
-        startupWaitAnswer = true;
-        
-        setTimeout(() => {
-            if (startupWaitAnswer && recognition) {
-                try { recognition.start(); } catch(e) {}
-            }
-        }, 3200);
+        const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+        fetch(`/api/emergency/contacts?session_id=${sess}`)
+            .then(res => res.json())
+            .then(data => {
+                emergencyContacts = data.contacts || [];
+                if (emergencyContacts.length === 0) {
+                    speak("Welcome to SAHAAI. I don't have an emergency contact. Say enter number to provide a number.", 100, true);
+                    contactSetupState = "WAITING_FOR_SOURCE";
+                    setTimeout(() => {
+                        if (recognition) { try { recognition.start(); } catch(e) {} }
+                    }, 6500);
+                } else {
+                    if (!isSafetyActive) toggleSafetyMode();
+                    speak("Welcome to SAHAAI. Safety companion is active. I am listening.", 100, true);
+                    setTimeout(() => {
+                        if (recognition) { try { recognition.start(); } catch(e) {} }
+                    }, 4000);
+                }
+            })
+            .catch(err => {
+                if (!isSafetyActive) toggleSafetyMode();
+                speak("Welcome to SAHAAI. Safety companion is active. I am listening.", 100, true);
+                setTimeout(() => {
+                    if (recognition) { try { recognition.start(); } catch(e) {} }
+                }, 4000);
+            });
     });
 }

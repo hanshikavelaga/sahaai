@@ -708,6 +708,19 @@ def test_scenario_q_voice_first_emergency_sos():
     assert esm_c.log[-1][1] == (None, None)
 
 
+def test_scenario_r_text_region_gating():
+    """Verify that detect_text_regions correctly filters empty inputs."""
+    from backend.app.vision import detect_text_regions
+    # Empty/None input check
+    assert detect_text_regions(None) is False
+    
+    # 2D empty array image check
+    import numpy as np
+    blank = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert detect_text_regions(blank) is False
+
+
+
 
 
 
