@@ -31,6 +31,31 @@ SAHAAI is a voice-first, low-latency assistive companion Progressive Web App (PW
 
 ---
 
+## 📂 Codebase Structure & File Descriptions
+
+```text
+SAHAAI/
+│
+├── backend/
+│   └── app/
+│       ├── main.py        # FastAPI server entrypoint hosting WebSockets stream ingestion & APIs
+│       ├── database.py    # Database connection manager logging events and triggering Twilio SMS
+│       ├── vision.py      # Vision processing pipeline managing YOLOv8-ONNX inference and contour gating
+│       └── hazard.py      # Spatial hazard assessment logic computing severity and motion direction
+│
+├── frontend/
+│   ├── index.html         # Main PWA responsive user interface layout with custom SVG integrations
+│   ├── app.js             # Core client framework managing WebSockets, Web Speech, and localStorage state
+│   ├── favicon.svg        # Official vector graphic icon of SAHAAI (emerald eye, safety shield, sound waves)
+│   └── manifest.json      # Progressive Web App (PWA) manifest detailing icons and configurations
+│
+├── yolov8n.onnx           # YOLOv8 nano model weights downloaded on startup
+├── .env                   # (Gitignored) Local configuration file containing API keys and endpoints
+└── README.md              # Project documentation, repository architecture, and setup guides
+```
+
+---
+
 ## ⚙️ Setup & Installation Instructions
 
 ### 1. Prerequisites
