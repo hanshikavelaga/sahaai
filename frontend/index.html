@@ -280,6 +280,17 @@
     <div id="ariaLivePolite" aria-live="polite" class="sr-only" role="status"></div>
     <div id="ariaLiveAssertive" aria-live="assertive" class="sr-only" role="alert"></div>
 
+    <!-- Startup Touch Gesture Modal for Speech Synthesis Autoplay -->
+    <div id="startupModal" class="fixed inset-0 bg-slate-950/95 z-[9999] flex flex-col items-center justify-center p-6 text-center space-y-6">
+        <div class="w-24 h-24 rounded-full bg-blue-600 animate-pulse flex items-center justify-center text-4xl shadow-2xl">
+            🟢
+        </div>
+        <h1 class="text-3xl font-black tracking-widest text-slate-100 uppercase">SAHAAI</h1>
+        <p class="text-slate-400 text-sm max-w-xs font-bold uppercase tracking-wider">
+            Assistive walk companion. Tap anywhere to start voice guidance.
+        </p>
+    </div>
+
     <!-- Script File Import -->
     <script src="app.js?v=2"></script>
 </body>

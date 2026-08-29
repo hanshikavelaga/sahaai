@@ -101,6 +101,7 @@ let devModeActive = false; // T14 Developer Mode state
 let sosTimer = null;
 let emergencyState = "IDLE"; // "IDLE", "COUNTDOWN", "LOCATION_REQUEST", "SOS_TRIGGERED", "SOS_ACTIVE"
 let emergencyContacts = []; // local cache loaded from database (T21.5)
+let startupWaitAnswer = false; // startup voice greeting state
 
 // Dialogs
 const scanDialog = document.getElementById("scanDialog");
@@ -861,6 +862,36 @@ function handleBackendResponse(data) {
 function handleVoiceCommand(command) {
     addDiagLog(`Command parsing: "${command}"`);
     
+    // 0. Startup voice response handler
+    if (startupWaitAnswer) {
+        if (command.includes("yes") || command.includes("start")) {
+            startupWaitAnswer = false;
+            const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+            fetch(`/api/emergency/contacts?session_id=${sess}`)
+                .then(res => res.json())
+                .then(data => {
+                    emergencyContacts = data.contacts || [];
+                    if (emergencyContacts.length === 0) {
+                        speak("I notice you have not set up any emergency contacts. Let's add your first contact. Say enter number to provide a number.", true);
+                        contactSetupState = "WAITING_FOR_SOURCE";
+                    } else {
+                        if (!isSafetyActive) toggleSafetyMode();
+                        speak("Safety mode active. Beeper and haptics initialized.", true);
+                    }
+                })
+                .catch(err => {
+                    if (!isSafetyActive) toggleSafetyMode();
+                    speak("Safety mode active. Beeper and haptics initialized.", true);
+                });
+        } else if (command.includes("no") || command.includes("stop")) {
+            startupWaitAnswer = false;
+            speak("Safety mode not started. SAHAAI is on standby.", true);
+        } else {
+            speak("Should I start safety mode? Say yes or no.", true);
+        }
+        return;
+    }
+    
     // 1. Voice cancellation during countdown (T21.7)
     if (emergencyState === "COUNTDOWN" && command.includes("cancel")) {
         cancelEmergencySOS();
@@ -1073,7 +1104,7 @@ function startStabilizeAndCapture() {
     scanState.subState = "STABILIZING";
     
     const step = scanState.currentStep;
-    speak(`${step} position reached. Hold camera steady.`, 30, true);
+    speak(`${step} position reached. Hold.`, 30, true);
     scanInstruction.textContent = `${step} position reached. Scanning...`;
     addDiagLog(`Scan step ${step}: stabilizing...`);
     
@@ -2178,4 +2209,28 @@ diagToggleBtn.addEventListener("click", () => {
 updateSafetyState("SAFE");
 updateFooterStatus(false);
 addDiagLog("SAHAAI client framework in STANDBY. Systems ready.");
-speak("Welcome to SAHAAI. Tap Ask SAHAAI or toggle safety mode to begin.");
+
+const startupModal = document.getElementById("startupModal");
+if (startupModal) {
+    startupModal.addEventListener("click", () => {
+        startupModal.classList.add("hidden");
+        
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                audioCtx = new AudioContext();
+            }
+        } catch (e) {
+            console.warn(e);
+        }
+        
+        speak("Welcome to SAHAAI. Should I start safety mode?", true);
+        startupWaitAnswer = true;
+        
+        setTimeout(() => {
+            if (startupWaitAnswer && recognition) {
+                try { recognition.start(); } catch(e) {}
+            }
+        }, 3200);
+    });
+}

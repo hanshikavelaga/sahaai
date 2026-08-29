@@ -15,7 +15,9 @@ MOTOR_VEHICLES = {"car", "truck", "bus", "motorcycle"}
 def calculate_hazard_priority(
     obj: Dict[str, Any], 
     audio_event: Optional[Dict[str, Any]] = None, 
-    vision_timestamp: Optional[int] = None
+    vision_timestamp: Optional[int] = None,
+    frame_width: float = 640.0,
+    frame_height: float = 480.0
 ) -> Dict[str, Any]:
     """
     T11/T15: Context-Aware Multimodal Sensor Fusion and Risk Engine.
@@ -31,9 +33,6 @@ def calculate_hazard_priority(
     bbox = obj.get("bbox", [160, 120, 480, 360])
     xmin, ymin, xmax, ymax = bbox
     box_h = ymax - ymin
-    
-    frame_width = 640.0
-    frame_height = 480.0
     
     # 2. T08: Corridor Direction mapping
     centroid = obj.get("centroid")

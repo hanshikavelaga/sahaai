@@ -348,7 +348,7 @@ async def websocket_stream(websocket: WebSocket):
                         # Step 3.1: Calculate base priority scores for all tracked targets (no audio)
                         base_candidates = []
                         for obj in tracked_objects:
-                            base_info = calculate_hazard_priority(obj, audio_event=None, vision_timestamp=None)
+                            base_info = calculate_hazard_priority(obj, audio_event=None, vision_timestamp=None, frame_width=frame_width, frame_height=frame_height)
                             base_info["obj_ref"] = obj
                             base_candidates.append(base_info)
                             
@@ -368,7 +368,7 @@ async def websocket_stream(websocket: WebSocket):
                             obj = cand["obj_ref"]
                             # Only fuse the single highest-risk vehicle with active audio events
                             if idx == best_vehicle_idx and audio_res and audio_res.get("sound"):
-                                fused_info = calculate_hazard_priority(obj, audio_event=audio_res, vision_timestamp=vision_timestamp)
+                                fused_info = calculate_hazard_priority(obj, audio_event=audio_res, vision_timestamp=vision_timestamp, frame_width=frame_width, frame_height=frame_height)
                                 
                                 # Enforce minimum fusion confidence threshold (0.20)
                                 if fused_info.get("fusion_confidence", 0.0) >= 0.20:
@@ -403,7 +403,7 @@ async def websocket_stream(websocket: WebSocket):
                                     continue
                                     
                             # Fallback (normal visual priority calculation without audio)
-                            final_info = calculate_hazard_priority(obj, audio_event=None, vision_timestamp=None)
+                            final_info = calculate_hazard_priority(obj, audio_event=None, vision_timestamp=None, frame_width=frame_width, frame_height=frame_height)
                             final_info["bbox"] = obj.get("bbox")
                             frame_detections.append(final_info)
                 except Exception as e:
