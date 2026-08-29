@@ -14,7 +14,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 # Check if credentials are present, otherwise load from local .env
 if not SUPABASE_URL or not SUPABASE_KEY:
     try:
-        from dotenv import load_model_env, load_dotenv
+        from dotenv import load_dotenv
         # Look for .env in project root
         load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
         SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -300,7 +300,7 @@ def insert_emergency_event(event_data: Dict[str, Any]) -> bool:
             else:
                 message_body = "SAHAAI Emergency SOS! (Location coordinates unavailable)"
                 
-            contacts = get_emergency_contacts(db_payload["session_id"])
+            contacts = event_data.get("contacts") or []
             for c in contacts:
                 to_number = c.get("phone_number", "").strip()
                 if to_number:

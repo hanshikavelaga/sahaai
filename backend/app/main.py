@@ -230,6 +230,7 @@ class EmergencyEventRequest(BaseModel):
     accuracy_m: Optional[float] = None
     location_available: bool = False
     contacts_notified: int = 0
+    contacts: Optional[list] = None
 
 @app.get("/api/emergency/contacts")
 async def fetch_contacts_api(session_id: str):

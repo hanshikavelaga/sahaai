@@ -308,6 +308,11 @@ class SpeechQueue {
             return;
         }
         
+        // Pause Speech Recognition during active speak output to prevent feedback echo loops
+        if (recognition) {
+            try { recognition.abort(); } catch (e) {}
+        }
+        
         this.isSpeaking = true;
         activeSpeechPriority = priority;
         
@@ -330,6 +335,12 @@ class SpeechQueue {
                 clearTimeout(this.watchdogTimer);
                 this.watchdogTimer = null;
             }
+            // Resume continuous listening when speech finishes
+            if (isSafetyActive || startupWaitAnswer || contactSetupState !== "IDLE" || sosWaitDialChoice) {
+                setTimeout(() => {
+                    try { recognition.start(); } catch(e) {}
+                }, 150);
+            }
             this.processNext();
         };
         
@@ -339,6 +350,12 @@ class SpeechQueue {
             if (this.watchdogTimer) {
                 clearTimeout(this.watchdogTimer);
                 this.watchdogTimer = null;
+            }
+            // Resume continuous listening when speech finishes
+            if (isSafetyActive || startupWaitAnswer || contactSetupState !== "IDLE" || sosWaitDialChoice) {
+                setTimeout(() => {
+                    try { recognition.start(); } catch(e) {}
+                }, 150);
             }
             this.processNext();
         };
@@ -802,7 +819,7 @@ function initWebSocket() {
     socket.onopen = () => {
         addDiagLog("WebSocket connection established with FastAPI.");
         updateFooterStatus(true);
-        streamInterval = setInterval(sendFrameToBackend, 330);
+        streamInterval = setInterval(sendFrameToBackend, 150);
     };
     
     socket.onmessage = (event) => {
@@ -1776,7 +1793,8 @@ function sendSOSAlert(source, lat, lon, acc, locationAvailable) {
             longitude: lon,
             accuracy_m: acc,
             location_available: locationAvailable,
-            contacts_notified: emergencyContacts.length
+            contacts_notified: emergencyContacts.length,
+            contacts: emergencyContacts
         })
     }).then(res => {
         addDiagLog("SOS Active logged to Supabase.");
@@ -1821,13 +1839,9 @@ if (closeContactsBtn) {
 
 async function loadContactsList() {
     if (!contactsList) return;
-    contactsList.innerHTML = "<div class='text-slate-500'>Loading contacts...</div>";
-    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
-    
     try {
-        const res = await fetch(`/api/emergency/contacts?session_id=${sess}`);
-        const data = await res.json();
-        emergencyContacts = data.contacts || [];
+        const localData = localStorage.getItem("sahaai_contacts");
+        emergencyContacts = localData ? JSON.parse(localData) : [];
         
         if (emergencyContacts.length === 0) {
             contactsList.innerHTML = "<div class='text-slate-500 italic'>No emergency contacts saved. Add one below or use voice setup.</div>";
@@ -1852,19 +1866,16 @@ async function loadContactsList() {
     }
 }
 
-// Global hook for inline removal
 window.deleteContactInline = async function(name) {
-    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
     try {
-        const res = await fetch(`/api/emergency/contact?session_id=${sess}&name=${encodeURIComponent(name)}`, {
-            method: "DELETE"
-        });
-        const data = await res.json();
-        if (data.success) {
-            addDiagLog(`Removed contact: ${name}`);
-            speak(`${name} has been removed.`, true);
-            loadContactsList();
-        }
+        const localData = localStorage.getItem("sahaai_contacts");
+        let list = localData ? JSON.parse(localData) : [];
+        list = list.filter(c => c.name !== name);
+        localStorage.setItem("sahaai_contacts", JSON.stringify(list));
+        emergencyContacts = list;
+        addDiagLog(`Removed contact: ${name}`);
+        speak(`${name} has been removed.`, true);
+        loadContactsList();
     } catch (e) {
         console.error(e);
     }
@@ -1875,7 +1886,6 @@ if (addContactForm) {
         e.preventDefault();
         const name = contactNameInput.value.trim();
         const phone = contactPhoneInput.value.trim();
-        const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
         
         if (emergencyContacts.length >= 3) {
             speak("Maximum of three emergency contacts reached.", true);
@@ -1883,25 +1893,23 @@ if (addContactForm) {
         }
         
         try {
-            const res = await fetch("/api/emergency/contact", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    session_id: sess,
-                    name: name,
-                    phone_number: phone,
-                    priority: emergencyContacts.length + 1,
-                    verified: true
-                })
+            const localData = localStorage.getItem("sahaai_contacts");
+            const list = localData ? JSON.parse(localData) : [];
+            list.push({
+                session_id: session_id,
+                name: name,
+                phone_number: phone,
+                priority: list.length + 1,
+                verified: true
             });
-            const data = await res.json();
-            if (data.success) {
-                contactNameInput.value = "";
-                contactPhoneInput.value = "";
-                addDiagLog(`Saved contact: ${name}`);
-                speak(`${name} has been saved as your emergency contact.`, true);
-                loadContactsList();
-            }
+            localStorage.setItem("sahaai_contacts", JSON.stringify(list));
+            emergencyContacts = list;
+            
+            contactNameInput.value = "";
+            contactPhoneInput.value = "";
+            addDiagLog(`Saved contact: ${name}`);
+            speak(`${name} has been saved as your emergency contact.`, true);
+            loadContactsList();
         } catch (err) {
             console.error(err);
         }
@@ -1916,36 +1924,29 @@ async function saveEmergencyContactVoice(name, phone) {
     }
     
     try {
-        const res = await fetch("/api/emergency/contact", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                session_id: sess,
-                name: name,
-                phone_number: phone,
-                priority: emergencyContacts.length + 1,
-                verified: true
-            })
+        const localData = localStorage.getItem("sahaai_contacts");
+        const list = localData ? JSON.parse(localData) : [];
+        list.push({
+            session_id: session_id,
+            name: name,
+            phone_number: phone,
+            priority: list.length + 1,
+            verified: true
         });
-        const data = await res.json();
-        if (data.success) {
-            addDiagLog(`Saved contact voice: ${name}`);
-            speak(`${name} has been saved as your emergency contact.`, true);
-            const contactsRes = await fetch(`/api/emergency/contacts?session_id=${sess}`);
-            const contactsData = await contactsRes.json();
-            emergencyContacts = contactsData.contacts || [];
-        }
+        localStorage.setItem("sahaai_contacts", JSON.stringify(list));
+        emergencyContacts = list;
+        
+        addDiagLog(`Saved contact voice: ${name}`);
+        speak(`${name} has been saved as your emergency contact.`, true);
     } catch (e) {
         speak("Failed to save contact.", true);
     }
 }
 
 async function listEmergencyContactsVoice() {
-    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
     try {
-        const res = await fetch(`/api/emergency/contacts?session_id=${sess}`);
-        const data = await res.json();
-        emergencyContacts = data.contacts || [];
+        const localData = localStorage.getItem("sahaai_contacts");
+        emergencyContacts = localData ? JSON.parse(localData) : [];
         
         if (emergencyContacts.length === 0) {
             speak("You have no saved emergency contacts.", true);
@@ -2449,31 +2450,28 @@ if (startupModal) {
             console.warn(e);
         }
         
-        const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
-        fetch(`/api/emergency/contacts?session_id=${sess}`)
-            .then(res => res.json())
-            .then(data => {
-                emergencyContacts = data.contacts || [];
-                if (emergencyContacts.length === 0) {
-                    speak("Welcome to SAHAAI. I don't have an emergency contact. Say enter number to provide a number.", 100, true);
-                    contactSetupState = "WAITING_FOR_SOURCE";
-                    setTimeout(() => {
-                        if (recognition) { try { recognition.start(); } catch(e) {} }
-                    }, 6500);
-                } else {
-                    if (!isSafetyActive) toggleSafetyMode();
-                    speak("Welcome to SAHAAI. Safety companion is active. I am listening.", 100, true);
-                    setTimeout(() => {
-                        if (recognition) { try { recognition.start(); } catch(e) {} }
-                    }, 4000);
-                }
-            })
-            .catch(err => {
+        try {
+            const localData = localStorage.getItem("sahaai_contacts");
+            emergencyContacts = localData ? JSON.parse(localData) : [];
+            if (emergencyContacts.length === 0) {
+                speak("Welcome to SAHAAI. I don't have an emergency contact. Say enter number to provide a number.", 100, true);
+                contactSetupState = "WAITING_FOR_SOURCE";
+                setTimeout(() => {
+                    if (recognition) { try { recognition.start(); } catch(e) {} }
+                }, 6500);
+            } else {
                 if (!isSafetyActive) toggleSafetyMode();
                 speak("Welcome to SAHAAI. Safety companion is active. I am listening.", 100, true);
                 setTimeout(() => {
                     if (recognition) { try { recognition.start(); } catch(e) {} }
                 }, 4000);
-            });
+            }
+        } catch (e) {
+            if (!isSafetyActive) toggleSafetyMode();
+            speak("Welcome to SAHAAI. Safety companion is active. I am listening.", 100, true);
+            setTimeout(() => {
+                if (recognition) { try { recognition.start(); } catch(e) {} }
+            }, 4000);
+        }
     });
 }
