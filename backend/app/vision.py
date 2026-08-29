@@ -185,22 +185,5 @@ def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
         except Exception as e:
             logger.error(f"ONNX inference error: {e}. Falling back to mock detection.")
 
-    # FALLBACK MOCK DETECTION (Triggered if ONNX is disabled or fails)
-    mean_val = float(np.mean(image))
-    if mean_val > 50:
-        if int(mean_val) % 3 == 0:
-            detections.append({
-                "class": "person",
-                "confidence": 0.88,
-                "bbox": [int(frame_width * 0.4), int(frame_height * 0.2), int(frame_width * 0.6), int(frame_height * 0.8)],
-                "severity": SEVERITIES["person"]
-            })
-        elif int(mean_val) % 3 == 1:
-            detections.append({
-                "class": "chair",
-                "confidence": 0.72,
-                "bbox": [int(frame_width * 0.2), int(frame_height * 0.5), int(frame_width * 0.45), int(frame_height * 0.9)],
-                "severity": SEVERITIES["chair"]
-            })
-            
+    # Fallback to empty list instead of generating false detections when model is loading/fails
     return detections

@@ -261,7 +261,7 @@ def delete_emergency_contact(session_id: str, name: str) -> bool:
         return False
 
 def insert_emergency_event(event_data: Dict[str, Any]) -> bool:
-    """T21: Inserts a triggered emergency SOS event into Supabase."""
+    """T21: Inserts a triggered emergency SOS event into Supabase and dispatches real SMS via Twilio."""
     if not supabase_client:
         logger.debug("Supabase offline: Skipping emergency event insert.")
         return True
@@ -276,7 +276,62 @@ def insert_emergency_event(event_data: Dict[str, Any]) -> bool:
             "location_available": bool(event_data.get("location_available", False)),
             "contacts_notified": int(event_data.get("contacts_notified", 0))
         }
+        
+        # 1. Log event to Supabase database
         response = supabase_client.table("emergency_events").insert(db_payload).execute()
+        
+        # 2. Twilio SMS Dispatch
+        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        from_number = os.environ.get("TWILIO_PHONE_NUMBER")
+        
+        if db_payload["status"] == "ACTIVE" and account_sid and auth_token and from_number:
+            import requests
+            from requests.auth import HTTPBasicAuth
+            
+            logger.info("Twilio configuration detected. Initiating SMS dispatch...")
+            
+            lat = db_payload.get("latitude")
+            lon = db_payload.get("longitude")
+            
+            if db_payload.get("location_available") and lat is not None and lon is not None:
+                map_url = f"https://maps.google.com/?q={lat},{lon}"
+                message_body = f"SAHAAI Emergency SOS! Shared Location: {map_url}"
+            else:
+                message_body = "SAHAAI Emergency SOS! (Location coordinates unavailable)"
+                
+            contacts = get_emergency_contacts(db_payload["session_id"])
+            for c in contacts:
+                to_number = c.get("phone_number", "").strip()
+                if to_number:
+                    # Clean & format country code (+91 for 10-digit Indian numbers)
+                    clean_number = to_number.replace(" ", "").replace("-", "")
+                    if not clean_number.startswith("+"):
+                        if len(clean_number) == 10:
+                            clean_number = "+91" + clean_number
+                        else:
+                            clean_number = "+" + clean_number
+                            
+                    try:
+                        logger.info(f"Sending Twilio SMS alert to {clean_number}...")
+                        twilio_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+                        res = requests.post(
+                            twilio_url,
+                            data={
+                                "From": from_number,
+                                "To": clean_number,
+                                "Body": message_body
+                            },
+                            auth=HTTPBasicAuth(account_sid, auth_token),
+                            timeout=6
+                        )
+                        if res.status_code in [200, 201]:
+                            logger.info(f"Twilio SMS successfully sent to {clean_number}.")
+                        else:
+                            logger.error(f"Twilio API rejected message: {res.text}")
+                    except Exception as twilio_err:
+                        logger.error(f"Twilio API request failed: {twilio_err}")
+                        
         return True
     except Exception as e:
         logger.error(f"Supabase insert error (emergency_events): {e}")

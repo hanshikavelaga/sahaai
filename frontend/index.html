@@ -7,6 +7,7 @@
     <!-- Tailwind CSS for clean responsive layout -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#1e293b">
@@ -26,7 +27,7 @@
     <!-- Header Section -->
     <header class="bg-slate-900 border-b border-slate-800 p-4 flex justify-between items-center z-10 shadow">
         <div class="flex items-center space-x-2">
-            <span class="text-red-500 font-extrabold text-lg">🔴</span>
+            <img src="favicon.svg" alt="SAHAAI Logo" class="w-7 h-7">
             <h1 class="text-xl font-black tracking-wider uppercase">SAHAAI</h1>
         </div>
         <div class="flex items-center space-x-3">
@@ -280,11 +281,8 @@
     <div id="ariaLivePolite" aria-live="polite" class="sr-only" role="status"></div>
     <div id="ariaLiveAssertive" aria-live="assertive" class="sr-only" role="alert"></div>
 
-    <!-- Startup Touch Gesture Modal for Speech Synthesis Autoplay -->
     <div id="startupModal" class="fixed inset-0 bg-slate-950/95 z-[9999] flex flex-col items-center justify-center p-6 text-center space-y-6">
-        <div class="w-24 h-24 rounded-full bg-blue-600 animate-pulse flex items-center justify-center text-4xl shadow-2xl">
-            🟢
-        </div>
+        <img src="favicon.svg" alt="SAHAAI Logo" class="w-24 h-24 animate-pulse">
         <h1 class="text-3xl font-black tracking-widest text-slate-100 uppercase">SAHAAI</h1>
         <p class="text-slate-400 text-sm max-w-xs font-bold uppercase tracking-wider">
             Assistive walk companion. Tap anywhere to start voice guidance.

@@ -104,6 +104,12 @@ let emergencyContacts = []; // local cache loaded from database (T21.5)
 let startupWaitAnswer = false; // startup voice greeting state
 let trackConfirmationFrames = {}; // T10/P0 temporal validation confirm frames map
 let sosWaitDialChoice = false; // T21/P1 SOS emergency dialer choice state
+let session_id = localStorage.getItem("sahaai_device_session_id");
+if (!session_id) {
+    session_id = "device_" + Math.random().toString(36).substring(2, 15);
+    localStorage.setItem("sahaai_device_session_id", session_id);
+}
+let isFrontFacingCamera = false; // T18/P0 front camera mirroring indicator
 
 // Dialogs
 const scanDialog = document.getElementById("scanDialog");
@@ -153,10 +159,22 @@ if (SpeechRecognition) {
     recognition.onerror = (err) => {
         addDiagLog("Speech recognition error: " + err.error);
         try { listenDialog.close(); } catch (e) {}
+        
+        if (isSafetyActive || startupWaitAnswer || contactSetupState !== "IDLE" || sosWaitDialChoice) {
+            setTimeout(() => {
+                try { recognition.start(); } catch(e) {}
+            }, 150);
+        }
     };
     
     recognition.onend = () => {
         try { listenDialog.close(); } catch (e) {}
+        
+        if (isSafetyActive || startupWaitAnswer || contactSetupState !== "IDLE" || sosWaitDialChoice) {
+            setTimeout(() => {
+                try { recognition.start(); } catch(e) {}
+            }, 150);
+        }
     };
 }
 
@@ -712,6 +730,16 @@ async function startWebcam() {
         video.srcObject = localMediaStream;
         video.classList.remove("hidden");
         placeholder.classList.add("hidden");
+        
+        try {
+            const videoTrack = localMediaStream.getVideoTracks()[0];
+            const settings = videoTrack.getSettings();
+            isFrontFacingCamera = settings.facingMode === "user";
+            addDiagLog(`Active camera: ${settings.facingMode || "unknown"} (Front camera: ${isFrontFacingCamera})`);
+        } catch (e) {
+            isFrontFacingCamera = false;
+        }
+        
         addDiagLog("Webcam access granted. Stream rendered at 30 FPS.");
     } catch (err) {
         addDiagLog(`Webcam error: ${err.message}.`);
@@ -880,6 +908,25 @@ function handleBackendResponse(data) {
     }
 
     if (!alert) return;
+    
+    // Front-Facing Camera Mirror Inversion Correction (P0.3)
+    if (isFrontFacingCamera && alert.direction) {
+        let dir = alert.direction.toLowerCase();
+        if (dir.includes("left")) {
+            alert.direction = alert.direction.replace(/left/gi, "right");
+        } else if (dir.includes("right")) {
+            alert.direction = alert.direction.replace(/right/gi, "left");
+        }
+        
+        if (alert.message) {
+            let msg = alert.message.toLowerCase();
+            if (msg.includes("left")) {
+                alert.message = alert.message.replace(/left/gi, "right");
+            } else if (msg.includes("right")) {
+                alert.message = alert.message.replace(/right/gi, "left");
+            }
+        }
+    }
     
     // Update State Indicator Banner
     updateSafetyState(alert.state);
@@ -2025,7 +2072,8 @@ function renderRadarMap(detections) {
             const bboxHeight = ymax - ymin;
             
             // 1. Resolution-independent relative angle (T18.1)
-            const normalizedX = (centroidX - centerX) / centerX;
+            const rawNormX = (centroidX - centerX) / centerX;
+            const normalizedX = isFrontFacingCamera ? -rawNormX : rawNormX;
             const theta = normalizedX * 30 * (Math.PI / 180); // FOV edge +/-30 degrees
             
             // 2. Resolution-independent relative proximity depth (T18.1)
