@@ -1,1 +1,0 @@
-# SAHAAI tests package.
