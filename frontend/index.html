@@ -45,6 +45,9 @@
             <button id="modeToggleBtn" class="bg-blue-900/40 border border-blue-700/60 hover:bg-blue-900/60 text-[10px] px-2.5 py-1 rounded-lg font-black tracking-wide text-blue-300 uppercase transition-all">
                 LIVE MODE
             </button>
+            <button id="devModeToggleBtn" class="bg-slate-900/65 border border-slate-800 hover:bg-slate-800 text-[10px] px-2.5 py-1 rounded-lg font-black tracking-wide text-slate-400 uppercase transition-all">
+                DEV MODE: OFF
+            </button>
         </div>
     </header>
 
@@ -87,7 +90,7 @@
                 
                 <div class="flex items-baseline justify-between border-b border-slate-800/60 pb-2">
                     <h2 id="hazardName" class="text-3xl font-black uppercase tracking-wide text-slate-300">CLEAR</h2>
-                    <div class="text-right">
+                    <div id="hazardRiskContainer" class="text-right hidden">
                         <span id="hazardRisk" class="text-3xl font-black text-slate-300">0</span>
                         <span class="text-xs text-slate-500 font-bold">/100</span>
                     </div>
@@ -143,7 +146,7 @@
             </div>
 
             <!-- Expandable Explainability Card -->
-            <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow">
+            <div id="explainabilityCard" class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow hidden">
                 <button id="diagToggleBtn" class="w-full bg-slate-900 hover:bg-slate-800 font-black py-3 px-4 text-xs tracking-wider transition uppercase flex justify-between items-center border-b border-slate-800">
                     <span>🧠 WHY THIS ALERT? (Explainability)</span>
                     <span id="diagChevron" class="text-slate-500">▼</span>

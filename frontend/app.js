@@ -94,6 +94,10 @@ const sosContactsCount = document.getElementById("sosContactsCount");
 const sosCoordsText = document.getElementById("sosCoordsText");
 const dialEmergencyBtn = document.getElementById("dialEmergencyBtn");
 
+const devModeToggleBtn = document.getElementById("devModeToggleBtn");
+const explainabilityCard = document.getElementById("explainabilityCard");
+let devModeActive = false; // T14 Developer Mode state
+
 let sosTimer = null;
 let emergencyState = "IDLE"; // "IDLE", "COUNTDOWN", "LOCATION_REQUEST", "SOS_TRIGGERED", "SOS_ACTIVE"
 let emergencyContacts = []; // local cache loaded from database (T21.5)
@@ -171,6 +175,7 @@ let lastAnnouncedAlert = {
     risk: 0,
     timestamp: 0
 };
+let announcedAlertsHistory = {}; // T12/T13 multi-target alert spam prevention cache
 
 // Initialize Voices on load
 function initVoices() {
@@ -335,36 +340,48 @@ function processSafetyAlert(alert, isDemo = false) {
     let shouldSpeak = false;
     let alertState = "NEW";
     
-    if (lastAnnouncedAlert.trackId === trackId) {
-        const timeDiff = (currentTime - lastAnnouncedAlert.timestamp) / 1000.0;
-        const riskDiff = alert.risk - lastAnnouncedAlert.risk;
-        const stateChanged = alert.state !== lastAnnouncedAlert.state;
-        
-        if (stateChanged || riskDiff > 15) {
-            shouldSpeak = true;
-            alertState = "UPDATED";
-        } else if (timeDiff > 6.0) {
-            shouldSpeak = true;
-            alertState = "ACTIVE";
-        } else {
-            shouldSpeak = false;
-            alertState = "ACTIVE";
-        }
-    } else {
-        shouldSpeak = true;
+    if (alert.state === "SAFE") {
+        announcedAlertsHistory = {};
+        shouldSpeak = (lastAnnouncedAlert.state !== "SAFE");
         alertState = "NEW";
+    } else {
+        const cached = announcedAlertsHistory[trackId];
+        if (cached) {
+            const timeDiff = (currentTime - cached.timestamp) / 1000.0;
+            const riskDiff = alert.risk - cached.risk;
+            const stateChanged = alert.state !== cached.state;
+            
+            if (stateChanged || riskDiff > 15) {
+                shouldSpeak = true;
+                alertState = "UPDATED";
+            } else if (timeDiff > 6.0) {
+                shouldSpeak = true;
+                alertState = "ACTIVE";
+            } else {
+                shouldSpeak = false;
+                alertState = "ACTIVE";
+            }
+        } else {
+            shouldSpeak = true;
+            alertState = "NEW";
+        }
     }
     
     if (shouldSpeak) {
-        lastAnnouncedAlert = {
+        const alertRecord = {
             trackId: trackId,
             message: currentMsg,
             state: alert.state,
             risk: alert.risk,
             timestamp: currentTime
         };
+        announcedAlertsHistory[trackId] = alertRecord;
+        lastAnnouncedAlert = alertRecord;
         
         if (alert.state === "CRITICAL") {
+            if (typeof SpeechSynthesis !== "undefined" && SpeechSynthesis) {
+                SpeechSynthesis.cancel();
+            }
             playCriticalBeep();
             triggerHapticFeedback("CRITICAL");
             speak(currentMsg, 100, true);
@@ -384,6 +401,11 @@ function processSafetyAlert(alert, isDemo = false) {
             
             if (ariaLivePolite) {
                 ariaLivePolite.textContent = currentMsg;
+            }
+        } else if (alert.state === "SAFE") {
+            speak("Path ahead is clear.", 30, false);
+            if (ariaLivePolite) {
+                ariaLivePolite.textContent = "Path ahead is clear.";
             }
         }
         
@@ -697,7 +719,10 @@ function drawBoundingBoxes(detections) {
         
         ctx.fillStyle = color;
         ctx.font = "bold 16px sans-serif";
-        const label = `${det.object.toUpperCase()} (${Math.round(det.confidence*100)}%) - ${det.motion}`;
+        const trackId = det.id !== undefined ? `[${det.id}] ` : "";
+        const label = devModeActive ? 
+            `${det.object.toUpperCase()} ${trackId}(${Math.round(det.confidence*100)}%) - ${det.motion}` : 
+            `${det.object.toUpperCase()}`;
         ctx.fillText(label, xmin, ymin > 25 ? ymin - 10 : ymin + 20);
     });
 }
@@ -892,18 +917,27 @@ function handleVoiceCommand(command) {
         return;
     }
     
-    // 3. Normal voice commands
-    if (command.includes("what is ahead") || command.includes("describe")) {
+    // 3. Normal voice commands (forgiving command parser T21)
+    const isWhatAhead = command.includes("what is ahead") || command.includes("what's ahead") || command.includes("describe");
+    const isScan = command.includes("scan around") || command.includes("start scan") || command.includes("scan");
+    const isReadText = command.includes("read text") || command.includes("read sign") || command.includes("read this") || command.includes("ocr");
+    const isHelp = command.includes("help") || command.includes("emergency") || command.includes("sos");
+    const isStartSafety = command.includes("start safety") || command.includes("activate mode") || command === "start" || command === "safety mode";
+    const isCancel = command.includes("cancel") || command === "stop";
+    
+    if (isWhatAhead) {
         speak("Analyzing what is ahead of you.", true);
         if (socket && socket.readyState === WebSocket.OPEN) {
             sendFrameToBackend();
         }
-    } else if (command.includes("scan around") || command.includes("start scan")) {
+    } else if (isScan) {
         triggerSmartScan();
-    } else if (command.includes("read text") || command.includes("read sign") || command.includes("ocr")) {
+    } else if (isReadText) {
         triggerOCR();
-    } else if (command.includes("help") || command.includes("emergency") || command.includes("sos")) {
+    } else if (isHelp) {
         triggerEmergencySOS("voice");
+    } else if (isCancel) {
+        cancelEmergencySOS();
     } else if (command.includes("set up emergency contacts") || command.includes("setup contacts")) {
         speak("Emergency contact setup. You can add up to three contacts. Say enter number to provide a number.", true);
         contactSetupState = "WAITING_FOR_SOURCE";
@@ -915,7 +949,7 @@ function handleVoiceCommand(command) {
     } else if (command.includes("call emergency") || command.includes("call 112")) {
         speak("Opening emergency call to 112.", true);
         setTimeout(() => { window.location.href = "tel:112"; }, 1000);
-    } else if (command.includes("start safety") || command.includes("activate mode")) {
+    } else if (isStartSafety) {
         if (!isSafetyActive) toggleSafetyMode();
     } else {
         speak("Command not recognized.");
@@ -1186,7 +1220,7 @@ function advanceScanStep() {
         scanState.currentStep = "REAR";
         scanState.subState = "ROTATING";
         scanInstruction.textContent = "Turn around slowly to check the REAR...";
-        speak("Right complete. Turn around slowly.", 30, true);
+        speak("Right complete. Rotate behind you.", 30, true);
         setStepSensorTimeout();
     } else if (step === "REAR") {
         scanState.currentStep = "COMPILING";
@@ -1196,7 +1230,7 @@ function advanceScanStep() {
 
 function compileScanSummary() {
     scanInstruction.textContent = "Compiling environmental scan results...";
-    speak("Scan complete. Summarizing findings.", 30, true);
+    speak("Scan complete. Compiling results.", 30, true);
     
     const zones = ["LEFT", "CENTER", "RIGHT", "REAR"];
     let leadWarningText = "";
@@ -1843,7 +1877,7 @@ function renderRadarMap(detections) {
             // Label
             radarCtx.fillStyle = "#ffffff";
             radarCtx.font = "bold 8px monospace";
-            const label = `[${trackStr}] ${det.object.substring(0, 5)}`;
+            const label = devModeActive ? `[${trackStr}] ${det.object.substring(0, 5)}` : `${det.object.substring(0, 5)}`;
             radarCtx.fillText(label, canvasX + 8, canvasY + 3);
             
             // T20: Event-Based DB Logging logic (Gating filters)
@@ -1897,7 +1931,8 @@ function renderRadarMap(detections) {
                     
                     radarCtx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
                     radarCtx.font = "bold 8px monospace";
-                    radarCtx.fillText(`[${trackId}] lost`, lastPt.x + 8, lastPt.y + 3);
+                    const lostLabel = devModeActive ? `[${trackId}] lost` : "lost";
+                    radarCtx.fillText(lostLabel, lastPt.x + 8, lastPt.y + 3);
                 } else {
                     // Log resolve & delete
                     logSpatialEvent(trackId, "HAZARD_RESOLVED", trackLoggedState[trackId]);
@@ -2011,8 +2046,8 @@ function toggleSafetyMode() {
     isSafetyActive = !isSafetyActive;
     
     if (isSafetyActive) {
-        toggleSafetyBtn.textContent = "PAUSE SAFETY MODE";
-        toggleSafetyBtn.className = "w-full bg-yellow-600 hover:bg-yellow-500 font-black p-4 rounded-xl text-lg tracking-wider transition shadow-lg border-b-4 border-yellow-800 active:border-b-0 active:mt-1 active:mb-[-1px]";
+        toggleSafetyBtn.textContent = "STOP SAFETY MODE";
+        toggleSafetyBtn.className = "w-full bg-red-600 hover:bg-red-500 font-black p-4 rounded-xl text-lg tracking-wider transition shadow-lg border-b-4 border-red-800 active:border-b-0 active:mt-1 active:mb-[-1px]";
         
         // Initialize Speech state on user tap (T13)
         if (SpeechSynthesis && voiceStatusText) {
@@ -2108,6 +2143,27 @@ askBtn.addEventListener("click", () => {
 scanBtn.addEventListener("click", triggerSmartScan);
 ocrBtn.addEventListener("click", triggerOCR);
 helpBtn.addEventListener("click", triggerEmergencySOS);
+
+if (devModeToggleBtn) {
+    devModeToggleBtn.addEventListener("click", () => {
+        devModeActive = !devModeActive;
+        if (devModeActive) {
+            devModeToggleBtn.textContent = "DEV MODE: ON";
+            devModeToggleBtn.className = "bg-green-900/60 border border-green-700/60 hover:bg-green-900/80 text-[10px] px-2.5 py-1 rounded-lg font-black tracking-wide text-green-300 uppercase transition-all";
+            explainabilityCard.classList.remove("hidden");
+            const riskContainer = document.getElementById("hazardRiskContainer");
+            if (riskContainer) riskContainer.classList.remove("hidden");
+            addDiagLog("Developer Mode activated.");
+        } else {
+            devModeToggleBtn.textContent = "DEV MODE: OFF";
+            devModeToggleBtn.className = "bg-slate-900/65 border border-slate-800 hover:bg-slate-800 text-[10px] px-2.5 py-1 rounded-lg font-black tracking-wide text-slate-400 uppercase transition-all";
+            explainabilityCard.classList.add("hidden");
+            const riskContainer = document.getElementById("hazardRiskContainer");
+            if (riskContainer) riskContainer.classList.add("hidden");
+            addDiagLog("Developer Mode deactivated.");
+        }
+    });
+}
 
 diagToggleBtn.addEventListener("click", () => {
     diagDrawer.classList.toggle("hidden");

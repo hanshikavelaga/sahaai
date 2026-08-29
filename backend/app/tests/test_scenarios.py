@@ -28,7 +28,7 @@ def test_scenario_a_static_person():
     
     assert result["object"] == "person"
     assert result["state"] == "CAUTION"
-    assert "person" in result["message"]
+    assert "person" in result["message"].lower()
     assert "center" in result["direction"]
 
 def test_scenario_b_near_chair():
@@ -50,7 +50,7 @@ def test_scenario_b_near_chair():
     
     assert result["object"] == "chair"
     assert result["state"] == "ALERT"
-    assert "obstacle" in result["message"] or "chair" in result["message"]
+    assert "obstacle" in result["message"].lower() or "chair" in result["message"].lower()
 
 def test_scenario_c_approaching_car_tracking():
     """

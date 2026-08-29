@@ -215,14 +215,35 @@ def calculate_hazard_priority(
     if len(fusion_reason) > 0:
         reasons.append(f"audio verified threat ({audio_event['sound'].lower()})")
 
-    # Build warning speech message text
+    # Build warning speech message text (Pillar 1 Polish guidelines)
     message = ""
     if state != "SAFE":
-        direction_prompt = "ahead" if direction == "center" else f"on your {direction}"
+        dir_suffix = "ahead" if direction == "center" else f"on your {direction}"
+        dir_from = "ahead" if direction == "center" else f"from your {direction}"
+        
+        is_horn = any("horn" in r.lower() for r in fusion_reason)
+        
+        lbl = class_name
+        if class_name in MOTOR_VEHICLES:
+            lbl = "vehicle"
+            
         if state == "CRITICAL":
-            message = f"Critical. {class_name} approaching {direction_prompt}!"
-        else:
-            message = f"Caution. {class_name} {direction_prompt}."
+            if is_horn:
+                message = "Critical. Vehicle approaching. Horn detected."
+            else:
+                message = f"Critical. {lbl.capitalize()} approaching {dir_from}."
+        elif state == "ALERT":
+            if motion_state == "APPROACHING":
+                message = f"{lbl.capitalize()} approaching {dir_from}."
+            else:
+                message = f"{lbl.capitalize()} {dir_suffix}."
+        else:  # CAUTION
+            if class_name == "person":
+                message = f"Person {dir_suffix}."
+            elif class_name == "chair" or class_name in SMALL_HAZARDS:
+                message = f"Obstacle {dir_suffix}."
+            else:
+                message = f"{lbl.capitalize()} {dir_suffix}."
 
     return {
         "id": track_id,
