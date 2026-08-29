@@ -63,6 +63,13 @@
                 <video id="videoElement" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover hidden"></video>
                 <canvas id="overlayCanvas" class="absolute inset-0 w-full h-full pointer-events-none z-10"></canvas>
                 
+                <!-- Orientation Warning Overlay -->
+                <div id="orientationWarning" class="absolute inset-0 bg-slate-950/85 z-20 flex flex-col items-center justify-center text-center p-6 space-y-3 hidden">
+                    <span class="text-6xl animate-bounce">📱</span>
+                    <h3 class="text-xl font-black text-red-500 uppercase tracking-widest">POINT CAMERA AHEAD</h3>
+                    <p class="text-xs text-slate-300 font-bold uppercase tracking-wider">Please hold your phone upright to scan road hazards.</p>
+                </div>
+                
                 <!-- Explicit Camera Viewport Placeholder -->
                 <div id="videoPlaceholder" class="flex flex-col items-center justify-center text-center p-6 space-y-3 z-10">
                     <span class="text-5xl opacity-40">📷</span>

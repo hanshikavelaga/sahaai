@@ -25,7 +25,10 @@ HAZARD_CLASSES = {
     28: "suitcase",     # Tripping hazard
     39: "bottle",       # Slipping/tripping hazard
     56: "chair",
-    60: "dining table"
+    60: "dining table",
+    62: "computer screen",
+    63: "computer",
+    65: "keyboard"
 }
 
 # Baseline severities for hazard priority calculations (0.0 to 1.0 scale)
@@ -43,6 +46,9 @@ SEVERITIES = {
     "chair": 0.6,
     "dining table": 0.6,
     "person": 0.6,
+    "computer": 0.5,
+    "computer screen": 0.5,
+    "keyboard": 0.5,
     "traffic light": 0.5,
     "cat": 0.5,
     "handbag": 0.5,

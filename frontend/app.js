@@ -1733,12 +1733,16 @@ function executeEmergencySOS(source) {
                 currentAcc = pos.coords.accuracy;
                 currentLocAvailable = true;
                 addDiagLog("GPS location resolved in background.");
+                sendSOSAlert(source, currentLat, currentLon, currentAcc, true);
             },
             (err) => {
                 console.warn("GPS Background access failed:", err);
+                sendSOSAlert(source, null, null, null, false);
             },
             { enableHighAccuracy: true, timeout: 5000 }
         );
+    } else {
+        sendSOSAlert(source, null, null, null, false);
     }
     
     // Set dialing choice listener
@@ -2475,3 +2479,28 @@ if (startupModal) {
         }
     });
 }
+
+let lastOrientationWarningTime = 0;
+window.addEventListener("deviceorientation", (event) => {
+    if (!isSafetyActive) return;
+    
+    // beta represents the front-to-back tilt in degrees.
+    // 90 is vertical, 0 is flat. Less than 45 indicates pointing down at floor.
+    const beta = event.beta;
+    const orientWarning = document.getElementById("orientationWarning");
+    
+    if (beta !== null && beta !== undefined) {
+        if (beta < 45 && beta > -45) {
+            if (orientWarning) orientWarning.classList.remove("hidden");
+            
+            const now = Date.now();
+            if (now - lastOrientationWarningTime > 10000) { // 10s cooldown
+                lastOrientationWarningTime = now;
+                speak("Point camera ahead. Hold your phone upright.", 70, true);
+                addDiagLog("Orientation warning: phone pointed downwards.");
+            }
+        } else {
+            if (orientWarning) orientWarning.classList.add("hidden");
+        }
+    }
+});
