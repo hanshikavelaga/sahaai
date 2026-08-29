@@ -57,7 +57,10 @@ from backend.app.database import (
     insert_emergency_event,
     insert_scan_session,
     insert_scan_result,
-    insert_spatial_event
+    insert_spatial_event,
+    insert_emergency_contact,
+    get_emergency_contacts,
+    delete_emergency_contact
 )
 
 # Initialize persistent tracker and audio event detector
@@ -209,6 +212,63 @@ async def log_spatial_event_api(payload: SpatialEventRequest):
         return {"success": success}
     except Exception as e:
         logger.error(f"Error logging spatial event: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ContactRequest(BaseModel):
+    session_id: str
+    name: str
+    phone_number: str
+    priority: int = 1
+    verified: bool = True
+
+class EmergencyEventRequest(BaseModel):
+    session_id: str
+    trigger_source: str
+    status: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    accuracy_m: Optional[float] = None
+    location_available: bool = False
+    contacts_notified: int = 0
+
+@app.get("/api/emergency/contacts")
+async def fetch_contacts_api(session_id: str):
+    """T21: Fetches emergency contacts for the active session."""
+    try:
+        contacts = get_emergency_contacts(session_id)
+        return {"contacts": contacts}
+    except Exception as e:
+        logger.error(f"Error fetching contacts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/emergency/contact")
+async def save_contact_api(payload: ContactRequest):
+    """T21: Saves an emergency contact to Supabase."""
+    try:
+        success = insert_emergency_contact(payload.dict())
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Error saving contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/emergency/contact")
+async def remove_contact_api(session_id: str, name: str):
+    """T21: Removes an emergency contact by name."""
+    try:
+        success = delete_emergency_contact(session_id, name)
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Error removing contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/emergency/trigger")
+async def trigger_sos_api(payload: EmergencyEventRequest):
+    """T21: Logs a triggered/cancelled emergency event to Supabase."""
+    try:
+        success = insert_emergency_event(payload.dict())
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Error logging emergency event: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/stream")

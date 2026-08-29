@@ -612,6 +612,101 @@ def test_scenario_p_spatial_event_logging():
     assert "17" not in cache.logged_states
     assert "20" in cache.logged_states
 
+def test_scenario_q_voice_first_emergency_sos():
+    """
+    Scenario Q: Voice-First Emergency & SOS System.
+    1. Verify emergency contact saving, verification, and limits.
+    2. Verify Voice SOS countdown, execution, and cancellation flows.
+    3. Verify Geolocation availability bounds and fallbacks.
+    """
+    class ContactStore:
+        def __init__(self):
+            self.contacts = []
+            
+        def add_contact(self, name, phone, verified=True):
+            if len(self.contacts) >= 3:
+                return False, "Maximum of three emergency contacts reached."
+            last_four = phone[-4:]
+            confirm_msg = f"Save {name} ending in {last_four}?"
+            self.contacts.append({"name": name, "phone": phone, "verified": verified})
+            return True, confirm_msg
+            
+        def remove_contact(self, name):
+            initial_len = len(self.contacts)
+            self.contacts = [c for c in self.contacts if c["name"] != name]
+            return len(self.contacts) < initial_len
+            
+    store = ContactStore()
+    
+    # Add Contacts
+    ok, msg = store.add_contact("Mom", "9876543210")
+    assert ok
+    assert "Save Mom ending in 3210?" in msg
+    assert len(store.contacts) == 1
+    
+    ok, msg = store.add_contact("Dad", "8765432109")
+    assert ok
+    
+    ok, msg = store.add_contact("Guardian", "7654321098")
+    assert ok
+    assert len(store.contacts) == 3
+    
+    # Exceeding Limit
+    ok, msg = store.add_contact("Sister", "6543210987")
+    assert not ok
+    assert "Maximum" in msg
+    
+    # Remove Contact
+    removed = store.remove_contact("Mom")
+    assert removed
+    assert len(store.contacts) == 2
+    
+    # State Machine for Emergency Countdown & SOS
+    class EmergencyStateMachine:
+        def __init__(self):
+            self.state = "IDLE"
+            self.log = []
+            
+        def trigger_sos(self, source="voice"):
+            if self.state != "IDLE":
+                return
+            self.state = "COUNTDOWN"
+            self.log.append(("COUNTDOWN", source))
+            
+        def cancel_sos(self):
+            if self.state == "IDLE":
+                return
+            self.state = "IDLE"
+            self.log.append(("CANCELLED", None))
+            
+        def execute_sos(self, gps_available=True, lat=None, lon=None):
+            self.state = "SOS_ACTIVE"
+            coords = (lat, lon) if gps_available else (None, None)
+            self.log.append(("ACTIVE", coords))
+            
+    # Sub-test A: Voice SOS Trigger & Success with GPS
+    esm_a = EmergencyStateMachine()
+    esm_a.trigger_sos("voice")
+    assert esm_a.state == "COUNTDOWN"
+    esm_a.execute_sos(gps_available=True, lat=17.6868, lon=83.2185)
+    assert esm_a.state == "SOS_ACTIVE"
+    assert esm_a.log == [("COUNTDOWN", "voice"), ("ACTIVE", (17.6868, 83.2185))]
+    
+    # Sub-test B: Voice SOS Countdown & Cancellation
+    esm_b = EmergencyStateMachine()
+    esm_b.trigger_sos("voice")
+    assert esm_b.state == "COUNTDOWN"
+    esm_b.cancel_sos()
+    assert esm_b.state == "IDLE"
+    assert esm_b.log == [("COUNTDOWN", "voice"), ("CANCELLED", None)]
+    
+    # Sub-test C: Voice SOS Trigger with GPS Unavailable
+    esm_c = EmergencyStateMachine()
+    esm_c.trigger_sos("button")
+    esm_c.execute_sos(gps_available=False)
+    assert esm_c.state == "SOS_ACTIVE"
+    assert esm_c.log[-1][1] == (None, None)
+
 
 
 

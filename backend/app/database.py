@@ -216,3 +216,68 @@ def insert_spatial_event(spatial_data: Dict[str, Any]) -> bool:
     except Exception as e:
         logger.error(f"Supabase insert error (spatial_events): {e}")
         return False
+
+def insert_emergency_contact(contact_data: Dict[str, Any]) -> bool:
+    """T21: Inserts or updates an emergency contact in Supabase."""
+    if not supabase_client:
+        logger.debug("Supabase offline: Skipping contact insert.")
+        return True
+    try:
+        db_payload = {
+            "session_id": contact_data.get("session_id", "default_session"),
+            "name": contact_data.get("name", "unknown"),
+            "phone_number": contact_data.get("phone_number", ""),
+            "priority": int(contact_data.get("priority", 1)),
+            "verified": bool(contact_data.get("verified", True))
+        }
+        response = supabase_client.table("emergency_contacts").insert(db_payload).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase insert error (emergency_contacts): {e}")
+        return False
+
+def get_emergency_contacts(session_id: str) -> list:
+    """T21: Retrieves emergency contacts for the session from Supabase."""
+    if not supabase_client:
+        logger.debug("Supabase offline: Returning empty emergency contacts.")
+        return []
+    try:
+        response = supabase_client.table("emergency_contacts").select("*").eq("session_id", session_id).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        logger.error(f"Supabase select error (emergency_contacts): {e}")
+        return []
+
+def delete_emergency_contact(session_id: str, name: str) -> bool:
+    """T21: Deletes a contact by name for the active session."""
+    if not supabase_client:
+        logger.debug("Supabase offline: Skipping contact deletion.")
+        return True
+    try:
+        response = supabase_client.table("emergency_contacts").delete().eq("session_id", session_id).eq("name", name).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase delete error (emergency_contacts): {e}")
+        return False
+
+def insert_emergency_event(event_data: Dict[str, Any]) -> bool:
+    """T21: Inserts a triggered emergency SOS event into Supabase."""
+    if not supabase_client:
+        logger.debug("Supabase offline: Skipping emergency event insert.")
+        return True
+    try:
+        db_payload = {
+            "session_id": event_data.get("session_id", "default_session"),
+            "trigger_source": event_data.get("trigger_source", "voice").lower(),
+            "status": event_data.get("status", "ACTIVE").upper(),
+            "latitude": event_data.get("latitude"),
+            "longitude": event_data.get("longitude"),
+            "accuracy_m": event_data.get("accuracy_m"),
+            "location_available": bool(event_data.get("location_available", False)),
+            "contacts_notified": int(event_data.get("contacts_notified", 0))
+        }
+        response = supabase_client.table("emergency_events").insert(db_payload).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase insert error (emergency_events): {e}")
+        return False

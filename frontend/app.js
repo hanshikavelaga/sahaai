@@ -29,6 +29,11 @@ const radarCtx = radarMapCanvas ? radarMapCanvas.getContext("2d") : null;
 let trackHistory = {}; // in-memory object track coordinates history for trailing (T18.5)
 let trackLoggedState = {}; // T20 state cache to compute movement delta and handle escalations
 
+// T21 Voice-Guided Contact Setup variables
+let contactSetupState = "IDLE";
+let tempContactName = "";
+let tempContactPhone = "";
+
 // HTML Elements
 const video = document.getElementById("videoElement");
 const canvas = document.getElementById("overlayCanvas");
@@ -70,6 +75,28 @@ const diagDrawer = document.getElementById("diagDrawer");
 const diagChevron = document.getElementById("diagChevron");
 const diagLogsList = document.getElementById("diagLogsList");
 const explainStructure = document.getElementById("explainStructure");
+
+// Emergency & Contacts Setup Components (T21)
+const contactsBtn = document.getElementById("contactsBtn");
+const closeContactsBtn = document.getElementById("closeContactsBtn");
+const contactsDialog = document.getElementById("contactsDialog");
+const contactsList = document.getElementById("contactsList");
+const addContactForm = document.getElementById("addContactForm");
+const contactNameInput = document.getElementById("contactNameInput");
+const contactPhoneInput = document.getElementById("contactPhoneInput");
+
+const emergencyHeader = document.getElementById("emergencyHeader");
+const sosCountdown = document.getElementById("sosCountdown");
+const emergencyStatusMsg = document.getElementById("emergencyStatusMsg");
+const emergencyDetailsCard = document.getElementById("emergencyDetailsCard");
+const sosStatusText = document.getElementById("sosStatusText");
+const sosContactsCount = document.getElementById("sosContactsCount");
+const sosCoordsText = document.getElementById("sosCoordsText");
+const dialEmergencyBtn = document.getElementById("dialEmergencyBtn");
+
+let sosTimer = null;
+let emergencyState = "IDLE"; // "IDLE", "COUNTDOWN", "LOCATION_REQUEST", "SOS_TRIGGERED", "SOS_ACTIVE"
+let emergencyContacts = []; // local cache loaded from database (T21.5)
 
 // Dialogs
 const scanDialog = document.getElementById("scanDialog");
@@ -809,6 +836,63 @@ function handleBackendResponse(data) {
 function handleVoiceCommand(command) {
     addDiagLog(`Command parsing: "${command}"`);
     
+    // 1. Voice cancellation during countdown (T21.7)
+    if (emergencyState === "COUNTDOWN" && command.includes("cancel")) {
+        cancelEmergencySOS();
+        return;
+    }
+    
+    // 2. Voice-guided emergency contact configuration state machine (T21.2)
+    if (contactSetupState === "WAITING_FOR_SOURCE") {
+        if (command.includes("enter number")) {
+            speak("Say the contact name.", true);
+            contactSetupState = "WAITING_FOR_NAME";
+            return;
+        } else if (command.includes("choose contact")) {
+            // Simulated Phone picker hook for accessibility
+            speak("Mom chosen, ending in 4321. Should I save this contact? Say yes or no.", true);
+            tempContactName = "Mom";
+            tempContactPhone = "987654321";
+            contactSetupState = "WAITING_FOR_CONFIRMATION";
+            return;
+        } else {
+            speak("Say enter number, or choose contact.", true);
+            return;
+        }
+    }
+    
+    if (contactSetupState === "WAITING_FOR_NAME") {
+        tempContactName = command.replace("contact name is", "").replace("name is", "").trim();
+        speak(`Say ${tempContactName}'s phone number.`, true);
+        contactSetupState = "WAITING_FOR_NUMBER";
+        return;
+    }
+    
+    if (contactSetupState === "WAITING_FOR_NUMBER") {
+        const numbersOnly = command.replace(/\D/g, "");
+        if (numbersOnly.length >= 4) {
+            tempContactPhone = numbersOnly;
+            const lastFour = tempContactPhone.substring(tempContactPhone.length - 4);
+            speak(`${tempContactName}, phone number ending in ${lastFour}. Should I save this contact? Say yes or no.`, true);
+            contactSetupState = "WAITING_FOR_CONFIRMATION";
+        } else {
+            speak("Please say the phone number again.", true);
+        }
+        return;
+    }
+    
+    if (contactSetupState === "WAITING_FOR_CONFIRMATION") {
+        if (command.includes("yes")) {
+            saveEmergencyContactVoice(tempContactName, tempContactPhone);
+            contactSetupState = "IDLE";
+        } else {
+            speak("Setup cancelled.", true);
+            contactSetupState = "IDLE";
+        }
+        return;
+    }
+    
+    // 3. Normal voice commands
     if (command.includes("what is ahead") || command.includes("describe")) {
         speak("Analyzing what is ahead of you.", true);
         if (socket && socket.readyState === WebSocket.OPEN) {
@@ -818,8 +902,19 @@ function handleVoiceCommand(command) {
         triggerSmartScan();
     } else if (command.includes("read text") || command.includes("read sign") || command.includes("ocr")) {
         triggerOCR();
-    } else if (command.includes("help") || command.includes("emergency")) {
-        triggerEmergencySOS();
+    } else if (command.includes("help") || command.includes("emergency") || command.includes("sos")) {
+        triggerEmergencySOS("voice");
+    } else if (command.includes("set up emergency contacts") || command.includes("setup contacts")) {
+        speak("Emergency contact setup. You can add up to three contacts. Say enter number to provide a number.", true);
+        contactSetupState = "WAITING_FOR_SOURCE";
+    } else if (command.includes("list my emergency contacts") || command.includes("list emergency contacts")) {
+        listEmergencyContactsVoice();
+    } else if (command.startsWith("remove") || command.startsWith("delete")) {
+        const nameToRemove = command.replace("remove", "").replace("delete", "").trim();
+        removeEmergencyContactVoice(nameToRemove);
+    } else if (command.includes("call emergency") || command.includes("call 112")) {
+        speak("Opening emergency call to 112.", true);
+        setTimeout(() => { window.location.href = "tel:112"; }, 1000);
     } else if (command.includes("start safety") || command.includes("activate mode")) {
         if (!isSafetyActive) toggleSafetyMode();
     } else {
@@ -1266,19 +1361,334 @@ async function triggerOCR() {
 // -------------------------------------------------------------
 // Emergency SOS Modal
 // -------------------------------------------------------------
-function triggerEmergencySOS() {
-    speak("Emergency activated. Displaying SOS and mock location.", true);
+function triggerEmergencySOS(source = "button") {
+    const finalSource = (typeof source === "string") ? source : "button";
+    if (emergencyState !== "IDLE") return;
+    
+    emergencyState = "COUNTDOWN";
     try { emergencyDialog.showModal(); } catch (e) {}
-    updateSafetyState("CRITICAL");
-    addDiagLog("EMERGENCY SOS triggered.");
+    
+    // Reset UI Elements
+    emergencyHeader.textContent = "SOS COUNTDOWN";
+    emergencyHeader.className = "text-2xl font-black text-red-400 uppercase tracking-widest";
+    sosCountdown.textContent = "5";
+    sosCountdown.classList.remove("hidden");
+    emergencyDetailsCard.classList.add("hidden");
+    dialEmergencyBtn.classList.add("hidden");
+    emergencyStatusMsg.textContent = "Say CANCEL or tap button to stop.";
+    emergencyStatusMsg.classList.remove("hidden");
+    
+    speak("Emergency alert will be sent in five seconds. Say cancel to stop.", true);
+    addDiagLog("SOS countdown started.");
+    
+    let secondsLeft = 5;
+    playCountdownBeep();
+    
+    clearInterval(sosTimer);
+    sosTimer = setInterval(() => {
+        secondsLeft--;
+        sosCountdown.textContent = secondsLeft;
+        
+        if (secondsLeft > 0) {
+            speak(secondsLeft.toString(), true);
+            playCountdownBeep();
+        } else {
+            clearInterval(sosTimer);
+            executeEmergencySOS(finalSource);
+        }
+    }, 1000);
 }
 
-closeEmergencyBtn.addEventListener("click", () => {
-    try { emergencyDialog.close(); } catch (e) {}
+function cancelEmergencySOS() {
+    if (emergencyState === "IDLE") return;
+    
+    clearInterval(sosTimer);
+    
+    // If cancelled during countdown, push log
+    if (emergencyState === "COUNTDOWN") {
+        const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+        fetch("/api/emergency/trigger", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                session_id: sess,
+                trigger_source: "voice_cancel",
+                status: "CANCELLED",
+                location_available: false,
+                contacts_notified: 0
+            })
+        }).catch(err => console.warn(err));
+    }
+    
+    emergencyState = "IDLE";
     updateSafetyState("SAFE");
-    speak("Emergency mode cancelled.", true);
-    addDiagLog("EMERGENCY SOS cancelled.");
-});
+    try { emergencyDialog.close(); } catch (e) {}
+    
+    speak("Emergency alert cancelled.", true);
+    addDiagLog("Emergency SOS cancelled.");
+}
+
+function executeEmergencySOS(source) {
+    emergencyState = "LOCATION_REQUEST";
+    
+    emergencyHeader.textContent = "SOS ACTIVE";
+    emergencyHeader.className = "text-2xl font-black text-red-600 uppercase tracking-widest animate-pulse";
+    sosCountdown.classList.add("hidden");
+    emergencyStatusMsg.textContent = "Acquiring coordinates...";
+    emergencyDetailsCard.classList.remove("hidden");
+    sosStatusText.textContent = "LOCATION REQUEST";
+    sosStatusText.className = "text-yellow-500 font-bold animate-pulse";
+    
+    updateSafetyState("CRITICAL"); // triggers continuous alarm T13
+    
+    if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                sendSOSAlert(source, pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, true);
+            },
+            (err) => {
+                console.warn("GPS access failed:", err);
+                sendSOSAlert(source, null, null, null, false);
+            },
+            { enableHighAccuracy: true, timeout: 5000 }
+        );
+    } else {
+        sendSOSAlert(source, null, null, null, false);
+    }
+}
+
+function sendSOSAlert(source, lat, lon, acc, locationAvailable) {
+    emergencyState = "SOS_ACTIVE";
+    
+    sosStatusText.textContent = "SOS BROADCAST ACTIVE";
+    sosStatusText.className = "text-red-500 font-bold animate-pulse";
+    sosContactsCount.textContent = `${emergencyContacts.length} contacts notified`;
+    
+    if (locationAvailable) {
+        sosCoordsText.textContent = `LAT: ${lat.toFixed(4)} | LON: ${lon.toFixed(4)} (±${acc.toFixed(0)}m)`;
+        speak("Emergency alert sent to your emergency contacts. Your location has been shared.", true);
+    } else {
+        sosCoordsText.textContent = "LOCATION UNAVAILABLE";
+        speak("Emergency alert sent, but your location is unavailable.", true);
+    }
+    
+    dialEmergencyBtn.classList.remove("hidden");
+    emergencyStatusMsg.classList.add("hidden");
+    
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    
+    fetch("/api/emergency/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            session_id: sess,
+            trigger_source: source,
+            status: "ACTIVE",
+            latitude: lat,
+            longitude: lon,
+            accuracy_m: acc,
+            location_available: locationAvailable,
+            contacts_notified: emergencyContacts.length
+        })
+    }).then(res => {
+        addDiagLog("SOS Active logged to Supabase.");
+    }).catch(err => {
+        console.warn("Supabase emergency insert failed:", err);
+    });
+}
+
+function playCountdownBeep() {
+    if (typeof audioCtx === "undefined" || !audioCtx) return;
+    try {
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime); // 880Hz alert tone
+        gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
+    } catch (e) {
+        console.warn(e);
+    }
+}
+
+closeEmergencyBtn.addEventListener("click", cancelEmergencySOS);
+
+// Contacts Dialog & Management Listeners (T21)
+if (contactsBtn) {
+    contactsBtn.addEventListener("click", () => {
+        loadContactsList();
+        try { contactsDialog.showModal(); } catch (e) {}
+    });
+}
+
+if (closeContactsBtn) {
+    closeContactsBtn.addEventListener("click", () => {
+        try { contactsDialog.close(); } catch (e) {}
+    });
+}
+
+async function loadContactsList() {
+    if (!contactsList) return;
+    contactsList.innerHTML = "<div class='text-slate-500'>Loading contacts...</div>";
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    
+    try {
+        const res = await fetch(`/api/emergency/contacts?session_id=${sess}`);
+        const data = await res.json();
+        emergencyContacts = data.contacts || [];
+        
+        if (emergencyContacts.length === 0) {
+            contactsList.innerHTML = "<div class='text-slate-500 italic'>No emergency contacts saved. Add one below or use voice setup.</div>";
+            return;
+        }
+        
+        contactsList.innerHTML = "";
+        emergencyContacts.forEach(c => {
+            const div = document.createElement("div");
+            div.className = "flex justify-between items-center bg-slate-950 border border-slate-800 p-2.5 rounded-xl";
+            div.innerHTML = `
+                <div class="flex flex-col">
+                    <span class="font-bold text-slate-300 text-xs">${c.name}</span>
+                    <span class="text-[10px] text-slate-500">${c.phone_number.substring(0, Math.max(0, c.phone_number.length - 4))}****</span>
+                </div>
+                <button onclick="deleteContactInline('${c.name}')" class="text-red-500 font-bold hover:text-red-400 text-xs uppercase px-2 py-1">Remove</button>
+            `;
+            contactsList.appendChild(div);
+        });
+    } catch (e) {
+        contactsList.innerHTML = "<div class='text-red-500'>Failed to load contacts.</div>";
+    }
+}
+
+// Global hook for inline removal
+window.deleteContactInline = async function(name) {
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    try {
+        const res = await fetch(`/api/emergency/contact?session_id=${sess}&name=${encodeURIComponent(name)}`, {
+            method: "DELETE"
+        });
+        const data = await res.json();
+        if (data.success) {
+            addDiagLog(`Removed contact: ${name}`);
+            speak(`${name} has been removed.`, true);
+            loadContactsList();
+        }
+    } catch (e) {
+        console.error(e);
+    }
+};
+
+if (addContactForm) {
+    addContactForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const name = contactNameInput.value.trim();
+        const phone = contactPhoneInput.value.trim();
+        const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+        
+        if (emergencyContacts.length >= 3) {
+            speak("Maximum of three emergency contacts reached.", true);
+            return;
+        }
+        
+        try {
+            const res = await fetch("/api/emergency/contact", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    session_id: sess,
+                    name: name,
+                    phone_number: phone,
+                    priority: emergencyContacts.length + 1,
+                    verified: true
+                })
+            });
+            const data = await res.json();
+            if (data.success) {
+                contactNameInput.value = "";
+                contactPhoneInput.value = "";
+                addDiagLog(`Saved contact: ${name}`);
+                speak(`${name} has been saved as your emergency contact.`, true);
+                loadContactsList();
+            }
+        } catch (err) {
+            console.error(err);
+        }
+    });
+}
+
+async function saveEmergencyContactVoice(name, phone) {
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    if (emergencyContacts.length >= 3) {
+        speak("Maximum of three emergency contacts reached.", true);
+        return;
+    }
+    
+    try {
+        const res = await fetch("/api/emergency/contact", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                session_id: sess,
+                name: name,
+                phone_number: phone,
+                priority: emergencyContacts.length + 1,
+                verified: true
+            })
+        });
+        const data = await res.json();
+        if (data.success) {
+            addDiagLog(`Saved contact voice: ${name}`);
+            speak(`${name} has been saved as your emergency contact.`, true);
+            const contactsRes = await fetch(`/api/emergency/contacts?session_id=${sess}`);
+            const contactsData = await contactsRes.json();
+            emergencyContacts = contactsData.contacts || [];
+        }
+    } catch (e) {
+        speak("Failed to save contact.", true);
+    }
+}
+
+async function listEmergencyContactsVoice() {
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    try {
+        const res = await fetch(`/api/emergency/contacts?session_id=${sess}`);
+        const data = await res.json();
+        emergencyContacts = data.contacts || [];
+        
+        if (emergencyContacts.length === 0) {
+            speak("You have no saved emergency contacts.", true);
+        } else {
+            const names = emergencyContacts.map(c => c.name).join(", ");
+            speak(`Your emergency contacts are: ${names}.`, true);
+        }
+    } catch (e) {
+        speak("Failed to load contacts list.", true);
+    }
+}
+
+async function removeEmergencyContactVoice(name) {
+    const sess = (typeof session_id !== "undefined" && session_id) ? session_id : "default_session";
+    try {
+        const res = await fetch(`/api/emergency/contact?session_id=${sess}&name=${encodeURIComponent(name)}`, {
+            method: "DELETE"
+        });
+        const data = await res.json();
+        if (data.success) {
+            speak(`${name} has been removed.`, true);
+            const contactsRes = await fetch(`/api/emergency/contacts?session_id=${sess}`);
+            const contactsData = await contactsRes.json();
+            emergencyContacts = contactsData.contacts || [];
+        } else {
+            speak("Contact not found.", true);
+        }
+    } catch (e) {
+        speak("Failed to delete contact.", true);
+    }
+}
 
 // -------------------------------------------------------------
 // Pillar D: 2D Sonar Radar Proximity Map & Spatial Log Engine (T18-T20)

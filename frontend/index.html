@@ -136,6 +136,10 @@
                         <span class="font-black uppercase tracking-wide">HELP ME</span>
                     </button>
                 </div>
+                <button id="contactsBtn" class="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 font-bold p-2.5 rounded-xl text-xs transition flex items-center justify-center space-x-2 shadow text-slate-300">
+                    <span class="text-sm">👤</span>
+                    <span class="font-black uppercase tracking-wide">Emergency Contacts Setup</span>
+                </button>
             </div>
 
             <!-- Expandable Explainability Card -->
@@ -206,22 +210,57 @@
         </div>
     </dialog>
 
-    <!-- Emergency Modal Screen (SOS) -->
+    <!-- Emergency Modal Screen (SOS) (T21) -->
     <dialog id="emergencyDialog" class="bg-red-950 text-white rounded-2xl border-4 border-red-600 p-8 max-w-sm w-full backdrop:bg-slate-950/90 shadow-2xl">
         <div class="flex flex-col items-center text-center space-y-5">
             <div class="text-5xl animate-bounce">🆘</div>
-            <h2 class="text-3xl font-black text-red-400 uppercase tracking-widest">SOS ACTIVE</h2>
-            <p class="text-sm text-red-200">Emergency mode active. Alert signals simulated for contacts:</p>
+            <h2 id="emergencyHeader" class="text-2xl font-black text-red-400 uppercase tracking-widest">SOS COUNTDOWN</h2>
             
-            <div class="bg-slate-950 border border-red-900/50 p-4 rounded-xl text-xs font-mono w-full text-left space-y-1">
-                <div>• Status: <span class="text-green-400 font-bold">CONNECTED</span></div>
-                <div>• Location: <span class="text-green-400 font-bold">AVAILABLE</span></div>
-                <div class="text-[10px] text-slate-400 mt-2">LAT: 12.9716° N | LON: 77.5946° E</div>
+            <!-- Countdown Indicator -->
+            <div id="sosCountdown" class="text-7xl font-black text-white py-2">5</div>
+            
+            <p id="emergencyStatusMsg" class="text-xs text-red-200">Say CANCEL or tap button to stop.</p>
+            
+            <!-- Spatial Location Details (T21.9) -->
+            <div id="emergencyDetailsCard" class="bg-slate-950 border border-red-900/50 p-4 rounded-xl text-xs font-mono w-full text-left space-y-1.5 hidden">
+                <div>• Status: <span id="sosStatusText" class="text-red-500 font-bold">COUNTDOWN</span></div>
+                <div>• Contacts: <span id="sosContactsCount" class="text-slate-300">0 notified</span></div>
+                <div class="text-[10px] text-slate-400 mt-2 border-t border-slate-900 pt-2" id="sosCoordsText">LAT: -- | LON: --</div>
             </div>
             
-            <button id="closeEmergencyBtn" class="bg-white text-slate-950 font-black px-6 py-3 rounded-xl text-sm w-full hover:bg-slate-200 transition tracking-wider uppercase shadow-md">
-                CANCEL ALARM
-            </button>
+            <div class="flex flex-col space-y-2.5 w-full">
+                <!-- Dial Emergency Button (T21.11) -->
+                <a id="dialEmergencyBtn" href="tel:112" class="hidden bg-red-600 text-white font-black py-3 rounded-xl text-xs tracking-wider uppercase shadow hover:bg-red-500 transition text-center flex items-center justify-center space-x-2">
+                    <span>📞</span>
+                    <span>DIAL EMERGENCY (112)</span>
+                </a>
+                
+                <button id="closeEmergencyBtn" class="bg-white text-slate-950 font-black px-6 py-3 rounded-xl text-xs w-full hover:bg-slate-200 transition tracking-wider uppercase shadow-md">
+                    CANCEL SOS
+                </button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Contacts Configuration Modal (T21) -->
+    <dialog id="contactsDialog" class="bg-slate-900 text-white rounded-2xl border-2 border-slate-800 p-6 max-w-sm w-full backdrop:bg-slate-950/85 shadow-2xl">
+        <div class="flex flex-col space-y-4">
+            <div class="flex justify-between items-center border-b border-slate-800 pb-2">
+                <h3 class="text-md font-black uppercase tracking-wide">Emergency Contacts</h3>
+                <button id="closeContactsBtn" class="text-slate-400 font-bold text-sm">✕</button>
+            </div>
+            
+            <!-- Contact list container -->
+            <div id="contactsList" class="flex flex-col space-y-2 max-h-[150px] overflow-y-auto pr-1 text-xs">
+                <!-- Contact rows go here -->
+            </div>
+            
+            <!-- Form to add new contact -->
+            <form id="addContactForm" class="flex flex-col space-y-2 pt-2 border-t border-slate-800">
+                <input type="text" id="contactNameInput" placeholder="Name" class="bg-slate-950 border border-slate-850 text-white text-xs p-2.5 rounded-lg outline-none" required>
+                <input type="tel" id="contactPhoneInput" placeholder="Phone Number" class="bg-slate-950 border border-slate-850 text-white text-xs p-2.5 rounded-lg outline-none" required>
+                <button type="submit" class="bg-blue-600 hover:bg-blue-500 font-bold py-2.5 rounded-lg text-xs transition uppercase">Add Contact</button>
+            </form>
         </div>
     </dialog>
 
