@@ -151,7 +151,7 @@ def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
                 conf = float(scores[class_id])
                 
                 # Check confidence threshold
-                if class_id in HAZARD_CLASSES and conf >= 0.40:
+                if class_id in HAZARD_CLASSES and conf >= 0.25:
                     x_center, y_center, width, height = pred[0:4]
                     
                     # Map coordinates back to original frame dimensions
@@ -174,7 +174,7 @@ def detect_objects(image: np.ndarray) -> List[Dict[str, Any]]:
                     class_ids.append(class_id)
             
             # Apply Non-Maximum Suppression (NMS) to eliminate duplicate overlapping boxes
-            indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.40, 0.45)
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.45)
             
             if len(indices) > 0:
                 # Handle OpenCV output flat array differences

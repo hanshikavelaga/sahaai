@@ -967,8 +967,8 @@ function handleBackendResponse(data) {
         
         trackConfirmationFrames[trackStr] = (trackConfirmationFrames[trackStr] || 0) + 1;
         
-        // Critical alerts or person detections bypass 3-frame delay; Caution/Alert require 3 confirmations
-        if (alert.state === "CRITICAL" || alert.object === "person" || trackConfirmationFrames[trackStr] >= 3) {
+        // Critical alerts, person, computer or screen detections bypass 3-frame delay; Caution/Alert require 3 confirmations
+        if (alert.state === "CRITICAL" || alert.object === "person" || alert.object === "computer" || alert.object === "computer screen" || trackConfirmationFrames[trackStr] >= 3) {
             processSafetyAlert(alert, false);
         } else {
             addDiagLog(`[GATING] Ignoring ${alert.object} (seen ${trackConfirmationFrames[trackStr]}/3 frames)`);
